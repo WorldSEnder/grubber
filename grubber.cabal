@@ -1,0 +1,69 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.34.3.
+--
+-- see: https://github.com/sol/hpack
+
+name:           grubber
+version:        0.1.0.0
+synopsis:       A build system (á la carte)
+description:    Please see the README on GitHub at <https://github.com/WorldSEnder/kinded-reflection#readme>
+homepage:       https://github.com/WorldSEnder/grubber#readme
+bug-reports:    https://github.com/WorldSEnder/grubber/issues
+author:         Martin Molzer
+maintainer:     ga65guy@mytum.de
+copyright:      2021 Martin Molzer
+license:        BSD-3
+build-type:     Simple
+extra-source-files:
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/WorldSEnder/grubber
+
+library
+  exposed-modules:
+      Grubber.Blocking
+      Grubber.Grubber
+      Grubber.Types
+  other-modules:
+      Paths_grubber
+  hs-source-dirs:
+      src
+  default-extensions: ExistentialQuantification FlexibleContexts FlexibleInstances GADTs GeneralizedNewtypeDeriving MultiParamTypeClasses RankNTypes TypeFamilies TypeOperators ScopedTypeVariables
+  ghc-options: -Wall
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , dependent-map
+    , dependent-sum
+    , dependent-sum-template
+    , exceptions
+    , stm
+    , transformers
+  default-language: Haskell2010
+
+test-suite grubber-tests
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_grubber
+  hs-source-dirs:
+      test
+  default-extensions: ExistentialQuantification FlexibleContexts FlexibleInstances GADTs GeneralizedNewtypeDeriving MultiParamTypeClasses RankNTypes TypeFamilies TypeOperators ScopedTypeVariables
+  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      HUnit >=1.6.1 && <2
+    , async
+    , base >=4.7 && <5
+    , dependent-map
+    , dependent-sum
+    , dependent-sum-template
+    , exceptions
+    , grubber
+    , stm
+    , tasty >=1.2
+    , tasty-hunit
+    , transformers
+  default-language: Haskell2010
