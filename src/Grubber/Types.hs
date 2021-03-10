@@ -17,7 +17,9 @@ module Grubber.Types
 , RecipeBook
 , Scheduler
 , runScheduler
+, runSchedulerX
 , Build
+, BuildX
 , LocallyIO(..)
 , MonadRestrictedIO(..)
 ) where
@@ -116,6 +118,7 @@ type RecipeBook c k v = forall x. k x -> Maybe (Recipe c k v x)
 -- | A build system working in a monad 'm', most likely supporting some kind of state,
 -- implements refreshing a key 'k x' given a book of rules to run.
 type Build m e k v = forall x. RecipeBook e k v -> k x -> m (v x)
+type BuildX m e k v = forall x. RecipeBook e k v -> k x -> m x (v x)
 
 runScheduler :: forall m e k v. ()
              => (forall x. k x -> m (v x))
@@ -127,3 +130,15 @@ runScheduler onNoRecipe schedule recipes = go
     go k  = case recipes k of
               Nothing -> onNoRecipe k
               Just reci -> schedule go k reci
+
+runSchedulerX :: forall m e k v. ()
+              => (forall x. k x -> m x (v x))
+              -> (forall x. Scheduler (m x) e k v x)
+              -> (forall x y r. k y -> m y r -> m x r)
+              -> BuildX m e k v
+runSchedulerX onNoRecipe schedule inDep recipes = go
+  where
+    go :: forall y. k y -> m y (v y)
+    go k  = case recipes k of
+              Nothing -> onNoRecipe k
+              Just reci -> schedule (\l -> inDep l $ go l) k reci

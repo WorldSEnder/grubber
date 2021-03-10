@@ -83,7 +83,7 @@ buildExample env = build onFailure (`DM.lookup` rules) where
         return $ SomeResult ())
     ]
 
-onFailure :: FailureReason k -> GrubberM DiamondTag Result x
+onFailure :: FailureReason k x -> GrubberM DiamondTag Result (Result x)
 onFailure _ = liftIO $ assertFailure "shouldn't fail to run"
 
 globalPutStrLock :: MVar ()

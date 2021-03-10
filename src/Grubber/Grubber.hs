@@ -72,19 +72,19 @@ runGrubberDef = runGrubber defaultGrubberCfg
 
 type MonadRecipeGrub = MonadRestrictedIO
 
-data FailureReason k
-  = forall x. NoRecipeFound (k x)
-  | forall x. DepFailed (k x) (FailureReason k)
+data FailureReason k x
+  = NoRecipeFound (k x)
+  | forall y. DepFailed (k y) (FailureReason k y)
   | RuntimeError SomeException
 
 type BuildResult f a x = Either f (a x)
 
 data TransactionValue k v x
   = InFlight
-  { _tvCompletion :: TMVar (BuildResult (FailureReason k) v x)
+  { _tvCompletion :: TMVar (BuildResult (FailureReason k x) v x)
   }
   | Built
-  { _tvResult :: BuildResult (FailureReason k) v x
+  { _tvResult :: BuildResult (FailureReason k x) v x
   }
 
 data CachedResult k v x = CachedResult
@@ -108,36 +108,32 @@ data TransactionState k v
   , tsBuildCache :: BuildCache k v
   }
 
-data AsyncResult f k v r = forall x. r ~ v x => AsyncResult (k x) (Async (BuildResult f v x))
-
-type RecipeM k v m = ReaderT (TransactionState k v) m
-type SchedulerM k v m = ExceptT (FailureReason k) (RecipeM k v m)
+data AsyncResult f v r = forall x. r ~ v x => AsyncResult (Async (BuildResult f v x))
 
 -- the monad to use to actually *run* a recipe in.
-newtype BuildEnvT f k v m r = BuildEnvT { runBuild :: BlockingListT (AsyncResult f k v) (ExceptT f m) r }
+newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: BlockingListT (AsyncResult (f x) v) (ExceptT (f x) m) r }
   deriving (Functor, Applicative, Monad, MonadRestrictedIO)
 
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
-              => (forall y. k y -> f -> f)
-              -> Scheduler (BuildEnvT f k v m) e k v x
-              -> Scheduler (ExceptT f m) e k v x
-scheduleAsync depFailed scheduleInner resolveDep target reci =
-  loopBlockingT unblockAsyncList (runBuild $ scheduleInner liftedResolve target reci)
+              => Scheduler (RecipeEnvT x f k v m) e k v x
+              -> Scheduler (ExceptT (f x) m) e k v x
+scheduleAsync scheduleInner resolveDep target reci =
+  loopBlockingT unblockAsyncList (runRecipeT $ scheduleInner liftedResolve target reci)
   where
-    liftedResolve :: forall y. k y -> BuildEnvT f k v m (v y)
-    liftedResolve key = BuildEnvT $ do
+    liftedResolve :: forall y. k y -> RecipeEnvT x f k v m (v y)
+    liftedResolve key = RecipeEnvT $ do
       as <- lift .  lift $ locallyIO (runExceptT $ resolveDep key) async
-      block $ AsyncResult key as
-    waitResultSTM :: forall y. AsyncResult f k v y -> ExceptT f STM y
-    waitResultSTM (AsyncResult key br) = do
+      block $ AsyncResult as
+    waitResultSTM :: forall y. AsyncResult (f x) v y -> ExceptT (f x) STM y
+    waitResultSTM (AsyncResult br) = do
       res <- lift $ waitSTM br
       case res of
-        Left failed -> throwE $ depFailed key failed
+        Left failed -> throwE failed
         Right ok -> return ok
     -- TODO: shortcurcuit on failed dependency and cancel remaining active tasks.
     -- NOTE: canceling might be wrong, when other tasks are waiting on the same dependency.
-    unblockAsyncList :: MonadIO m => TaskList (AsyncResult f k v) b -> ExceptT f m b
+    unblockAsyncList :: MonadIO m => TaskList (AsyncResult (f x) v) b -> ExceptT (f x) m b
     unblockAsyncList = ExceptT . liftIO . atomically . runExceptT . elimTaskListA waitResultSTM
 
 newtype Nat m n = NatMorph { (|~>) :: forall x. m x -> n x }
@@ -152,9 +148,12 @@ schedulerExceptReader scheduleInner resolver target reci = do
   rdrNat <- lift getReaderUnlift
   mapExceptT lift $ scheduleInner (mapExceptT (rdrNat |~>) . resolver) target reci
 
+type RecipeM k v m = ReaderT (TransactionState k v) m
+type SchedulerM k v m x = ExceptT (FailureReason k x) (RecipeM k v m)
+
 scheduleCoop :: (MonadIO m, GCompare k)
-             => Scheduler (SchedulerM k v m) e k v x
-             -> Scheduler (SchedulerM k v m) e k v x
+             => Scheduler (SchedulerM k v m x) e k v x
+             -> Scheduler (SchedulerM k v m x) e k v x
 scheduleCoop scheduleInner resolveDep target reci = do
   targetInfo <- asks tsBuiltTargets
   strat <- liftIO . atomically $ do
@@ -175,18 +174,26 @@ scheduleCoop scheduleInner resolveDep target reci = do
       liftIO . atomically $ putTMVar promise val
       return val
 
-build :: (MonadRestrictedIO m, LocallyIO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
-      => (forall x. FailureReason k -> m (v x))
+newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
+
+scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
+scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
+
+build :: forall e k v m.
+         (MonadRestrictedIO m, LocallyIO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
+      => (forall x. FailureReason k x -> m (v x))
       -> Build m MonadRecipeGrub k v
 build onFailure recipes globalGoal = do
   m <- liftIO $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
-  res <- runReaderT (runExceptT $ mkTarget globalGoal) $ TransactionState m c
+  res <- runReaderT (runExceptT $ runBuildT $ mkTarget globalGoal) $ TransactionState m c
   finalize res
   where
-    grubberScheduler = scheduleCoop $ schedulerExceptReader $ scheduleAsync DepFailed scheduleResolver
+    grubberScheduler :: forall y. Scheduler (BuildT k v m y) MonadRestrictedIO k v y
+    grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync scheduleResolver
 
-    mkTarget = runScheduler (throwE . NoRecipeFound) grubberScheduler recipes
+    catchErrorInDep k err = BuildT $ catchE (runBuildT err) (throwE . DepFailed k)
+    mkTarget = runSchedulerX (BuildT . throwE . NoRecipeFound) grubberScheduler catchErrorInDep recipes
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
