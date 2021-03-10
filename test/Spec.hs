@@ -107,14 +107,14 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         liftOptionalIO $ atomicPutStrLn "start right"
         ~(SomeResult b) <- resolve DBot
         ~(SomeResult l) <- resolve DLeft
-        b `seq` l `seq` liftOptionalIO $ atomicPutStrLn "end right"
+        b `seq` l `seq` liftOptionalIO $ threadDelay 2000000 >> atomicPutStrLn "end right"
         return $ SomeResult ())
     , DTop   :=> recipe (do
         liftOptionalIO $ atomicPutStrLn "start top"
         ~(SomeResult b) <- resolve DBot
-        ~(SomeResult l) <- resolve DLeft
-        ~(SomeResult r) <- resolve DRight
-        b `seq` l `seq` r `seq` liftOptionalIO $ atomicPutStrLn "end top"
+        ~(SomeResult l) <- b `seq` resolve DLeft
+        ~(SomeResult r) <- l `seq` resolve DRight
+        r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
         return $ SomeResult ())
     ]
 
