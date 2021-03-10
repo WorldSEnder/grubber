@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.34.3.
+-- This file has been generated from package.yaml by hpack version 0.34.4.
 --
 -- see: https://github.com/sol/hpack
 
@@ -31,7 +31,17 @@ library
       Paths_grubber
   hs-source-dirs:
       src
-  default-extensions: ExistentialQuantification FlexibleContexts FlexibleInstances GADTs GeneralizedNewtypeDeriving MultiParamTypeClasses RankNTypes TypeFamilies TypeOperators ScopedTypeVariables
+  default-extensions:
+      ExistentialQuantification
+      FlexibleContexts
+      FlexibleInstances
+      GADTs
+      GeneralizedNewtypeDeriving
+      MultiParamTypeClasses
+      RankNTypes
+      TypeFamilies
+      TypeOperators
+      ScopedTypeVariables
   ghc-options: -Wall
   build-depends:
       async
@@ -52,7 +62,17 @@ test-suite grubber-tests
       Paths_grubber
   hs-source-dirs:
       test
-  default-extensions: ExistentialQuantification FlexibleContexts FlexibleInstances GADTs GeneralizedNewtypeDeriving MultiParamTypeClasses RankNTypes TypeFamilies TypeOperators ScopedTypeVariables
+  default-extensions:
+      ExistentialQuantification
+      FlexibleContexts
+      FlexibleInstances
+      GADTs
+      GeneralizedNewtypeDeriving
+      MultiParamTypeClasses
+      RankNTypes
+      TypeFamilies
+      TypeOperators
+      ScopedTypeVariables
   ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       HUnit >=1.6.1 && <2
