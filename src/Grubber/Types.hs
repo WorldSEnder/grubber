@@ -38,12 +38,12 @@ class Monad m => MonadRestrictedIO m where
   -- but lifecycle events, logging and emitting debugging information can still be
   -- performed.
   liftOptionalIO :: IO () -> m ()
-  -- | Lift a repeatable io action. No guarantees if the io action can 
-  liftIdempotentIO :: IO a -> m a
+  -- Lift a repeatable io action. No guarantees if the io action can not be repeated.
+  -- liftIdempotentIO :: IO a -> m a
 
 instance MonadRestrictedIO IO where
   liftOptionalIO = id
-  liftIdempotentIO = id
+  -- liftIdempotentIO = id
 
 newtype MonadRestrictedIOViaIO m a = MonadRestrictedIOViaIO (m a)
   deriving (Functor, Applicative, Monad)
@@ -51,11 +51,11 @@ newtype MonadRestrictedIOViaTrans t m a = MonadRestrictedIOViaTrans (t m a)
   deriving (Functor, Applicative, Monad)
 instance MonadIO m => MonadRestrictedIO (MonadRestrictedIOViaIO m) where
   liftOptionalIO = MonadRestrictedIOViaIO . liftIO
-  liftIdempotentIO = MonadRestrictedIOViaIO . liftIO
+  -- liftIdempotentIO = MonadRestrictedIOViaIO . liftIO
 
 instance (MonadRestrictedIO m, MonadTrans t, Monad (t m)) => MonadRestrictedIO (MonadRestrictedIOViaTrans t m) where
   liftOptionalIO = MonadRestrictedIOViaTrans . lift . liftOptionalIO
-  liftIdempotentIO = MonadRestrictedIOViaTrans . lift . liftIdempotentIO
+  -- liftIdempotentIO = MonadRestrictedIOViaTrans . lift . liftIdempotentIO
 
 deriving via (MonadRestrictedIOViaTrans (ReaderT r) m)
   instance MonadRestrictedIO m => MonadRestrictedIO (ReaderT r m)

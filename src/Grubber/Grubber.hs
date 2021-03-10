@@ -60,7 +60,7 @@ instance MonadRestrictedIO (GrubberM k v) where
   liftOptionalIO act = do
     shouldRun <- GrubberM $ asks (grubberRunLifecycle . gsCfg)
     if shouldRun then GrubberM (liftIO act) else pure ()
-  liftIdempotentIO = GrubberM . liftIO
+  -- liftIdempotentIO = GrubberM . liftIO
 
 runGrubber :: GrubberConfig -> GrubberM k v r -> IO r
 runGrubber cfg m = do
@@ -112,17 +112,21 @@ data AsyncResult f k v r = forall x. r ~ v x => AsyncResult (k x) (Async (BuildR
 
 type RecipeM k v m = ReaderT (TransactionState k v) m
 type SchedulerM k v m = ExceptT (FailureReason k) (RecipeM k v m)
-type ResolveM k f v m = BlockingListT (AsyncResult f k v) (ExceptT f m)
 
-scheduleAsync :: forall e f k v m x. (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
+-- the monad to use to actually *run* a recipe in.
+newtype BuildEnvT f k v m r = BuildEnvT { runBuild :: BlockingListT (AsyncResult f k v) (ExceptT f m) r }
+  deriving (Functor, Applicative, Monad, MonadRestrictedIO)
+
+scheduleAsync :: forall e f k v m x.
+                 (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
               => (forall y. k y -> f -> f)
-              -> Scheduler (ResolveM k f v m) e k v x
+              -> Scheduler (BuildEnvT f k v m) e k v x
               -> Scheduler (ExceptT f m) e k v x
 scheduleAsync depFailed scheduleInner resolveDep target reci =
-  loopBlockingT unblockAsyncList (scheduleInner liftedResolve target reci)
+  loopBlockingT unblockAsyncList (runBuild $ scheduleInner liftedResolve target reci)
   where
-    liftedResolve :: forall y. k y -> ResolveM k f v m (v y)
-    liftedResolve key = do
+    liftedResolve :: forall y. k y -> BuildEnvT f k v m (v y)
+    liftedResolve key = BuildEnvT $ do
       as <- lift .  lift $ locallyIO (runExceptT $ resolveDep key) async
       block $ AsyncResult key as
     waitResultSTM :: forall y. AsyncResult f k v y -> ExceptT f STM y
