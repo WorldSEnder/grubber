@@ -114,10 +114,10 @@ type RecipeM k v m = ReaderT (TransactionState k v) m
 type SchedulerM k v m = ExceptT (FailureReason k) (RecipeM k v m)
 type ResolveM k f v m = BlockingListT (AsyncResult f k v) (ExceptT f m)
 
-scheduleAsync :: forall e f k v m. (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
+scheduleAsync :: forall e f k v m x. (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
               => (forall y. k y -> f -> f)
-              -> Scheduler (ResolveM k f v m) e k v
-              -> Scheduler (ExceptT f m) e k v
+              -> Scheduler (ResolveM k f v m) e k v x
+              -> Scheduler (ExceptT f m) e k v x
 scheduleAsync depFailed scheduleInner resolveDep target reci =
   loopBlockingT unblockAsyncList (scheduleInner liftedResolve target reci)
   where
@@ -142,15 +142,15 @@ getReaderUnlift :: Monad m => ReaderT r m (Nat (ReaderT r m) m)
 getReaderUnlift = ReaderT $ \env -> return $ NatMorph $ \rdr -> runReaderT rdr env
 
 schedulerExceptReader :: Monad m
-                      => Scheduler (ExceptT f m) e k v
-                      -> Scheduler (ExceptT f (ReaderT r m)) e k v
+                      => Scheduler (ExceptT f m) e k v x
+                      -> Scheduler (ExceptT f (ReaderT r m)) e k v x
 schedulerExceptReader scheduleInner resolver target reci = do
   rdrNat <- lift getReaderUnlift
   mapExceptT lift $ scheduleInner (mapExceptT (rdrNat |~>) . resolver) target reci
 
 scheduleCoop :: (MonadIO m, GCompare k)
-             => Scheduler (SchedulerM k v m) e k v
-             -> Scheduler (SchedulerM k v m) e k v
+             => Scheduler (SchedulerM k v m) e k v x
+             -> Scheduler (SchedulerM k v m) e k v x
 scheduleCoop scheduleInner resolveDep target reci = do
   targetInfo <- asks tsBuiltTargets
   strat <- liftIO . atomically $ do

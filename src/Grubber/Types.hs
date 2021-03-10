@@ -104,12 +104,12 @@ instance DependencyResolver k v (WithResolverT k v m) where
 runResolver :: (forall x. k x -> m (v x)) -> WithResolverT k v m a -> m a
 runResolver r task = runReaderT (runResolver_ task) (Resolver r)
 
-type Scheduler m e k v = forall x. (forall y. k y -> m (v y))
+type Scheduler m e k v x = (forall y. k y -> m (v y))
                          -> k x -> Recipe e k v x -> m (v x)
 
 -- TODO: weaken the assumptions to 'BuildEnv e m'?
 scheduleResolver :: (BuildEnv e (WithResolverT k v m))
-                 => Scheduler m e k v
+                 => Scheduler m e k v x
 scheduleResolver deps _ reci = runResolver deps $ runRecipe reci 
 
 type RecipeBook c k v = forall x. k x -> Maybe (Recipe c k v x)
@@ -120,7 +120,7 @@ type Build m e k v = forall x. RecipeBook e k v -> k x -> m (v x)
 
 runScheduler :: forall m e k v. ()
              => (forall x. k x -> m (v x))
-             -> Scheduler m e k v
+             -> (forall x. Scheduler m e k v x)
              -> Build m e k v
 runScheduler onNoRecipe schedule recipes = go
   where
