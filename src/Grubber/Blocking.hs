@@ -55,7 +55,6 @@ runBlockingT :: Monad m => BlockingT w m a -> m (Either a (Blocker w m a))
 runBlockingT (Pure a) = return $ Left a
 runBlockingT (BlockedOn w c) = return $ Right $ Blocker w c
 runBlockingT (Effect c) = c runBlockingT
--- runBlockingT (BlockedOnEff w c) = return $ Right $ Blocker w $ \b -> c b runBlockingT
 
 loopBlockingT :: Monad m => (forall b. w b -> m b) -> BlockingT w m a -> m a
 loopBlockingT unblock action = runBlockingT action >>= loop where
@@ -66,7 +65,6 @@ instance Functor m => Functor (BlockingT w m) where
   fmap f (Pure a) = Pure (f a)
   fmap f (BlockedOn w cont) = BlockedOn w $ fmap f . cont
   fmap f (Effect ma) = Effect $ \x -> ma (x . fmap f)
-  --fmap f (BlockedOnEff w c) = BlockedOnEff w $ \b x -> c b (x . fmap f)
 
 instance (Applicative m, Semigroupal w) => Applicative (BlockingT w m) where
   pure = Pure
@@ -76,22 +74,6 @@ instance (Applicative m, Semigroupal w) => Applicative (BlockingT w m) where
     BlockedOn (w1 <<>> w2) $ \mww -> c1 (fst <$> mww) <*> c2 (snd <$> mww)
   Effect mf          <*> Effect ma          =
     Effect $ \x -> mf $ \bf -> ma $ \ba -> x (bf <*> ba)
-  --BlockedOnEff w1 c1 <*> BlockedOnEff w2 c2 =
-  --  BlockedOnEff (w1 <<>> w2) $ \(wf, wa) x -> c1 wf $ \bf -> c2 wa $ \ba -> x (bf <*> ba)
-
-  --Pure f             <*> BlockedOnEff w c   =
-  --  BlockedOnEff w $ \wa x -> c wa $ \ba -> x (Pure f <*> ba)
-  --BlockedOn w1 c1    <*> BlockedOnEff w2 c2 =
-  --  BlockedOnEff (w1 <<>> w2) $ \(wf, wa) x -> c2 wa $ \ba -> x (c1 wf <*> ba)
-  --Effect mf          <*> BlockedOnEff w c   =
-  --  BlockedOnEff w $ \wa x -> mf $ \bf -> c wa $ \ba -> x (bf <*> ba)
-
-  --BlockedOnEff w c   <*> Pure a             =
-  --  BlockedOnEff w $ \wf x -> c wf $ \bf -> x (bf <*> Pure a)
-  --BlockedOnEff w1 c1 <*> BlockedOn w2 c2    =
-  --  BlockedOnEff (w1 <<>> w2) $ \(wf, wa) x -> c1 wf $ \bf -> x (bf <*> c2 wa)
-  --BlockedOnEff w c   <*> Effect ma          =
-  --  BlockedOnEff w $ \wf x -> ma $ \ba -> c wf $ \bf -> x (bf <*> ba)
 
   BlockedOn w c      <*> ba                 = BlockedOn w $ \b -> c b <*> ba
   bf                 <*> BlockedOn w c      = BlockedOn w $ \b -> bf <*> c b
@@ -103,7 +85,6 @@ instance (Applicative m, Semigroupal w) => Monad (BlockingT w m) where
   Pure a >>= f = f a
   BlockedOn w c >>= f = BlockedOn w $ c >=> f
   Effect ma >>= f = Effect $ \x -> ma $ \ba -> x (ba >>= f)
-  --BlockedOnEff w c >>= f = BlockedOnEff w $ \b x -> c b $ \ba -> x (ba >>= f)
 
 instance (Semigroupal w) => MonadTrans (BlockingT w) where
   lift ma = Effect $ \x -> ma >>= x . Pure
