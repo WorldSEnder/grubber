@@ -1,4 +1,5 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -64,23 +65,23 @@ buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag Result (Re
 buildExample env = build onFailure (`DM.lookup` rules) where
   rules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   rules = DM.fromList
-    [ DBot   :=> recipe (do
+    [ DBot   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterBot env) (+ 1)
-        return $ SomeResult ())
-    , DLeft  :=> recipe (do
+        return $ SomeResult ()
+    , DLeft  :=> recipe do
         liftOptionalIO $ modifyIORef' (counterLeft env) (+ 1)
         ~(SomeResult _) <- resolve DBot
-        return $ SomeResult ())
-    , DRight :=> recipe (do
+        return $ SomeResult ()
+    , DRight :=> recipe do
         liftOptionalIO $ modifyIORef' (counterRight env) (+ 1)
         ~(SomeResult _) <- resolve DLeft
         ~(SomeResult _) <- resolve DBot
-        return $ SomeResult ())
-    , DTop   :=> recipe (do
+        return $ SomeResult ()
+    , DTop   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterTop env) (+ 1)
         ~(SomeResult _) <- resolve DRight
         ~(SomeResult _) <- resolve DLeft
-        return $ SomeResult ())
+        return $ SomeResult ()
     ]
 
 onFailure :: FailureReason k x -> GrubberM DiamondTag Result (Result x)
@@ -97,25 +98,25 @@ _delayedExample :: DiamondTag x -> GrubberM DiamondTag Result (Result x)
 _delayedExample = build onFailure (`DM.lookup` delayedRules) where
   delayedRules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   delayedRules = DM.fromList
-    [ DBot    :=> recipe (do
+    [ DBot    :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start bot" >> threadDelay 2000000 >> atomicPutStrLn "end bot"
-        return $ SomeResult ())
-    , DLeft   :=> recipe (do
+        return $ SomeResult ()
+    , DLeft   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start left" >> threadDelay 3000000 >> atomicPutStrLn "end left"
-        return $ SomeResult ())
-    , DRight  :=> recipe (do
+        return $ SomeResult ()
+    , DRight  :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start right"
         ~(SomeResult b) <- resolve DBot
         ~(SomeResult l) <- resolve DLeft
         b `seq` l `seq` liftOptionalIO $ threadDelay 2000000 >> atomicPutStrLn "end right"
-        return $ SomeResult ())
-    , DTop   :=> recipe (do
+        return $ SomeResult ()
+    , DTop   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start top"
         ~(SomeResult b) <- resolve DBot
         ~(SomeResult l) <- b `seq` resolve DLeft
         ~(SomeResult r) <- l `seq` resolve DRight
         r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
-        return $ SomeResult ())
+        return $ SomeResult ()
     ]
 
 blockingTests :: TestTree
