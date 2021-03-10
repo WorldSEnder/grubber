@@ -85,9 +85,9 @@ type instance BuildEnv (e ': es) f = (BuildEnv e f, BuildEnv es f)
 
 -- | A recipe for producing a value of type 'b' in any environment fulfilling 'c',
 -- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
-newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f, DependencyResolver k v f) => f (v x) }
+newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f) => WithResolverT k v f (v x) }
 
-recipe :: (forall f. (BuildEnv e f, DependencyResolver k v f) => f (v x)) -> Recipe e k v x
+recipe :: (forall f. (BuildEnv e f) => WithResolverT k v f (v x)) -> Recipe e k v x
 recipe = Recipe
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
@@ -107,8 +107,7 @@ runResolver r task = runReaderT (runResolver_ task) (Resolver r)
 type Scheduler m e k v x = (forall y. k y -> m (v y))
                          -> k x -> Recipe e k v x -> m (v x)
 
--- TODO: weaken the assumptions to 'BuildEnv e m'?
-scheduleResolver :: (BuildEnv e (WithResolverT k v m))
+scheduleResolver :: (BuildEnv e m)
                  => Scheduler m e k v x
 scheduleResolver deps _ reci = runResolver deps $ runRecipe reci 
 
