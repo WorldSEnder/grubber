@@ -7,12 +7,16 @@
 {-# LANGUAGE UndecidableInstances #-}
 module Grubber.Types
 ( Recipe
+, BuildEnv
 , recipe
 , runRecipe
+, scheduleResolver
 , DependencyResolver(..)
 , WithResolverT(..)
 , runResolver
 , RecipeBook
+, Scheduler
+, runScheduler
 , Build
 , LocallyIO(..)
 , MonadRestrictedIO(..)
@@ -88,20 +92,39 @@ recipe = Recipe
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
 
-newtype WithResolverT k v m a = WithResolver { runResolver_ :: ReaderT (Resolver k v (WithResolverT k v m)) m a }
+newtype WithResolverT k v m a = WithResolver { runResolver_ :: ReaderT (Resolver k v m) m a }
   deriving (Functor, Applicative, Monad, MonadIO, LocallyIO, MonadRestrictedIO)
 
 instance MonadTrans (WithResolverT k v) where
   lift ma = WithResolver $ lift ma
 
 instance DependencyResolver k v (WithResolverT k v m) where
-  resolve key = WithResolver $ ReaderT $ \res@(Resolver r) -> runReaderT (runResolver_ $ r key) res
+  resolve key = WithResolver $ ReaderT $ \(Resolver r) -> r key
 
-runResolver :: (forall x. k x -> WithResolverT k v m (v x)) -> WithResolverT k v m a -> m a
+runResolver :: (forall x. k x -> m (v x)) -> WithResolverT k v m a -> m a
 runResolver r task = runReaderT (runResolver_ task) (Resolver r)
+
+type Scheduler m e k v = forall x. (forall y. k y -> m (v y))
+                         -> k x -> Recipe e k v x -> m (v x)
+
+-- TODO: weaken the assumptions to 'BuildEnv e m'?
+scheduleResolver :: (BuildEnv e (WithResolverT k v m))
+                 => Scheduler m e k v
+scheduleResolver deps _ reci = runResolver deps $ runRecipe reci 
 
 type RecipeBook c k v = forall x. k x -> Maybe (Recipe c k v x)
 
 -- | A build system working in a monad 'm', most likely supporting some kind of state,
 -- implements refreshing a key 'k x' given a book of rules to run.
-type Build m c k v = forall x. RecipeBook c k v -> k x -> m ()
+type Build m e k v = forall x. RecipeBook e k v -> k x -> m (v x)
+
+runScheduler :: forall m e k v. ()
+             => (forall x. k x -> m (v x))
+             -> Scheduler m e k v
+             -> Build m e k v
+runScheduler onNoRecipe schedule recipes = go
+  where
+    go :: forall y. k y -> m (v y)
+    go k  = case recipes k of
+              Nothing -> onNoRecipe k
+              Just reci -> schedule go k reci

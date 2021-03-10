@@ -6,7 +6,6 @@ import Test.Tasty
 import Test.Tasty.HUnit (testCase)
 import Test.HUnit
 
-import Control.Monad.Trans.Class
 import Control.Monad.IO.Class
 import Control.Concurrent (threadDelay)
 import Data.IORef
@@ -35,8 +34,8 @@ testRecipe signalOk = recipe $ do
   ~(SomeResult y) <- resolve $ SomeDep 5
   return $ SomeResult $ x + y
 
-mockResolve :: Dependency a -> WithResolverT Dependency Result (BlockingListT Dependency IO) (Result a)
-mockResolve dep@(SomeDep _) = lift $ block (SomeResult <$> singletonF dep)
+mockResolve :: Dependency a -> BlockingListT Dependency IO (Result a)
+mockResolve dep@(SomeDep _) = block (SomeResult <$> singletonF dep)
 
 decodeList :: TaskList Dependency x -> [Integer]
 decodeList = runCS . elimTaskList alg where
@@ -61,7 +60,7 @@ data DiamondTestEnv
   , counterBot :: IORef Int
   }
 
-buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM ()
+buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag Result (Result x)
 buildExample env = build onFailure (`DM.lookup` rules) where
   rules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   rules = DM.fromList
@@ -84,7 +83,7 @@ buildExample env = build onFailure (`DM.lookup` rules) where
         return $ SomeResult ())
     ]
 
-onFailure :: FailureReason k -> GrubberM ()
+onFailure :: FailureReason k -> GrubberM DiamondTag Result x
 onFailure _ = liftIO $ assertFailure "shouldn't fail to run"
 
 globalPutStrLock :: MVar ()
@@ -94,7 +93,7 @@ globalPutStrLock = unsafePerformIO $ newMVar ()
 atomicPutStrLn :: String -> IO ()
 atomicPutStrLn str = withMVar globalPutStrLock $ \_ -> putStrLn str
 
-_delayedExample :: DiamondTag x -> GrubberM ()
+_delayedExample :: DiamondTag x -> GrubberM DiamondTag Result (Result x)
 _delayedExample = build onFailure (`DM.lookup` delayedRules) where
   delayedRules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   delayedRules = DM.fromList

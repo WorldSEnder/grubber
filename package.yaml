@@ -27,6 +27,7 @@ dependencies:
 - dependent-sum-template
 - async
 - exceptions
+- mtl
 
 ghc-options:
 - -Wall
