@@ -28,9 +28,10 @@ data Result a where
   SomeResult :: a -> Result a
 
 testRecipe :: IORef Bool -> Recipe MonadIO Dependency Result Integer
-testRecipe signalOk = recipe $ do
+testRecipe signalOk = recipe do
   ~(SomeResult x) <- resolve $ SomeDep 4
-  -- this should write true before blocking in our test case
+  -- both dependencies should be blocked on *before* effectfully writing to the IORef
+  -- depends on ApplicativeDo doing the right thing.
   liftIO $ writeIORef signalOk False
   ~(SomeResult y) <- resolve $ SomeDep 5
   return $ SomeResult $ x + y
@@ -46,6 +47,17 @@ decodeList = runCS . elimTaskList alg where
 getBlockers :: Either z (Blocker (TaskList Dependency) m x) -> IO [Integer]
 getBlockers (Left _) = assertFailure "expected computation to be blocked"
 getBlockers (Right (Blocker l _)) = pure $ decodeList l
+
+blockingTests :: TestTree
+blockingTests = testGroup "'Blocking' tests"
+  [ testCase "recipe blocks on two deps" $ do
+      signalOk <- newIORef True
+      blocks <- runBlockingT (runResolver mockResolve $ runRecipe $ testRecipe signalOk) >>= getBlockers
+      blocks @?= [4, 5]
+      -- We want to, as early as possible, start co-runnable dependencies.
+      -- Hence, block asap before running other side effects.
+      readIORef signalOk @? "should not write to the IORef before blocking"
+  ]
 
 data DiamondTag a where
   DBot, DLeft, DRight, DTop :: DiamondTag ()
@@ -118,17 +130,6 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
         return $ SomeResult ()
     ]
-
-blockingTests :: TestTree
-blockingTests = testGroup "'Blocking' tests"
-  [ testCase "recipe blocks on two deps" $ do
-      signalOk <- newIORef True
-      blocks <- runBlockingT (runResolver mockResolve $ runRecipe $ testRecipe signalOk) >>= getBlockers
-      blocks @?= [4, 5]
-      -- We want to, as early as possible, start co-runnable dependencies.
-      -- Hence, block asap before running other side effects.
-      readIORef signalOk @? "should not write to the IORef before blocking"
-  ]
 
 grubberSpecCfg :: GrubberConfig
 grubberSpecCfg = defaultGrubberCfg
