@@ -133,12 +133,12 @@ deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v
 
 instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
   readFile (FileReadToken fp) hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
-    liftBaseWith (\runInBase -> withBinaryFile fp ReadMode $ runInBase . hdl) >>= restoreM
+    control $ \runInBase -> withBinaryFile fp ReadMode $ runInBase . hdl
 
 instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
   type FileWriteToken (RecipeEnvT x f k v m) = FilePath
   writeFile fp hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
-    liftBaseWith (\runInBase -> withBinaryFile fp WriteMode $ runInBase . hdl) >>= restoreM
+    control $ \runInBase -> withBinaryFile fp WriteMode $ runInBase . hdl
   toReadToken = return . FileReadToken
 
 instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)

@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE LambdaCase #-}
 module Grubber.Blocking
 ( BlockingT(..)
 , BlockingListT
@@ -98,11 +99,9 @@ instance (MonadBaseControl b m, Semigroupal w) => MonadBaseControl b (BlockingT 
   type StM (BlockingT w m) a = StM m (Either a (Blocker w m a))
   -- TODO: check this for correctness (and efficiency)
   liftBaseWith f = lift $ liftBaseWith $ \runner -> f (runner . runBlockingT)
-  restoreM s = do
-    aOrBlck <- lift $ restoreM s
-    case aOrBlck of
-      Left a -> return a
-      Right (Blocker p c) -> BlockedOn p c
+  restoreM s = lift (restoreM s) >>= \case
+    Left a -> return a
+    Right (Blocker p c) -> BlockedOn p c
 
 data TaskList f x where
   Single :: f a -> (a -> x) -> TaskList f x
