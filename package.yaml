@@ -28,6 +28,10 @@ dependencies:
 - async
 - exceptions
 - mtl
+- reflection
+- transformers-base
+- monad-control
+- constraints
 
 ghc-options:
 - -Wall

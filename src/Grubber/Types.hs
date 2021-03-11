@@ -9,6 +9,7 @@ module Grubber.Types
 ( Recipe
 , BuildEnv
 , recipe
+, recipe'
 , runRecipe
 , scheduleResolver
 , DependencyResolver(..)
@@ -20,7 +21,6 @@ module Grubber.Types
 , runSchedulerX
 , Build
 , BuildX
-, LocallyIO(..)
 , MonadRestrictedIO(..)
 ) where
 
@@ -28,7 +28,9 @@ import Control.Monad.Trans.Reader
 import Control.Monad.Trans.State
 import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
+import Control.Monad.Base
 import Control.Monad.Trans.Class
+import Control.Monad.Trans.Control
 
 import Data.Kind
 import Grubber.Blocking
@@ -68,15 +70,6 @@ deriving via (MonadRestrictedIOViaTrans (ExceptT r) m)
 deriving via (MonadRestrictedIOViaTrans (BlockingT w) m)
   instance (Semigroupal w, MonadRestrictedIO m) => MonadRestrictedIO (BlockingT w m)
 
-class MonadIO m => LocallyIO m where
-  locallyIO :: m a -> (IO a -> IO b) -> m b
-
-instance LocallyIO IO where
-  locallyIO ma f = f ma
-
-instance LocallyIO m => LocallyIO (ReaderT r m) where
-  locallyIO rdr f = ReaderT $ \r -> locallyIO (runReaderT rdr r) f
-
 class DependencyResolver k v f where
   resolve :: k a -> f (v a)
 
@@ -89,16 +82,22 @@ type instance BuildEnv (e ': es) f = (BuildEnv e f, BuildEnv es f)
 -- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
 newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f) => WithResolverT k v f (v x) }
 
-recipe :: (forall f. (BuildEnv e f) => WithResolverT k v f (v x)) -> Recipe e k v x
+recipe :: (forall f. BuildEnv e f => WithResolverT k v f (v x)) -> Recipe e k v x
 recipe = Recipe
+
+recipe' :: (forall f. BuildEnv e f => (forall a. k a -> f (v a)) -> f (v x)) -> Recipe e k v x
+recipe' reci = Recipe $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci resolv
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
 
 newtype WithResolverT k v m a = WithResolver { runResolver_ :: ReaderT (Resolver k v m) m a }
-  deriving (Functor, Applicative, Monad, MonadIO, LocallyIO, MonadRestrictedIO)
+  deriving (Functor, Applicative, Monad, MonadRestrictedIO)
 
 instance MonadTrans (WithResolverT k v) where
   lift ma = WithResolver $ lift ma
+
+deriving instance MonadBase b m => MonadBase b (WithResolverT k v m)
+deriving instance MonadBaseControl b m => MonadBaseControl b (WithResolverT k v m)
 
 instance DependencyResolver k v (WithResolverT k v m) where
   resolve key = WithResolver $ ReaderT $ \(Resolver r) -> r key

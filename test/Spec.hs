@@ -7,7 +7,7 @@ import Test.Tasty
 import Test.Tasty.HUnit (testCase)
 import Test.HUnit
 
-import Control.Monad.IO.Class
+import Control.Monad.Base
 import Control.Concurrent (threadDelay)
 import Data.IORef
 import Data.GADT.Compare.TH
@@ -27,12 +27,12 @@ data Dependency a where
 data Result a where
   SomeResult :: a -> Result a
 
-testRecipe :: IORef Bool -> Recipe MonadIO Dependency Result Integer
+testRecipe :: IORef Bool -> Recipe (MonadBase IO) Dependency Result Integer
 testRecipe signalOk = recipe do
   ~(SomeResult x) <- resolve $ SomeDep 4
   -- both dependencies should be blocked on *before* effectfully writing to the IORef
   -- depends on ApplicativeDo doing the right thing.
-  liftIO $ writeIORef signalOk False
+  liftBase $ writeIORef signalOk False
   ~(SomeResult y) <- resolve $ SomeDep 5
   return $ SomeResult $ x + y
 
@@ -97,7 +97,7 @@ buildExample env = build onFailure (`DM.lookup` rules) where
     ]
 
 onFailure :: FailureReason k x -> GrubberM DiamondTag Result (Result x)
-onFailure _ = liftIO $ assertFailure "shouldn't fail to run"
+onFailure _ = liftBase $ assertFailure "shouldn't fail to run"
 
 globalPutStrLock :: MVar ()
 globalPutStrLock = unsafePerformIO $ newMVar ()

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Grubber.Blocking
 ( BlockingT(..)
 , BlockingListT
@@ -19,7 +20,8 @@ module Grubber.Blocking
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
-import Control.Monad.IO.Class
+import Control.Monad.Trans.Control
+import Control.Monad.Base
 
 class Functor f => Semigroupal f where
   (<<>>) :: f a -> f b -> f (a, b)
@@ -49,7 +51,7 @@ instance (Semigroupal w, Monad m) => MonadBlockingT w (BlockingT w m) where
 instance Monad m => MonadBlockingT w (BlockingT (TaskList w) m) where
   block wa = block $ singletonF wa
 
-data Blocker w m a = forall b. Blocker (w b) (m b -> BlockingT w m a)
+data Blocker w m a = forall b. Blocker !(w b) (m b -> BlockingT w m a)
 
 runBlockingT :: Monad m => BlockingT w m a -> m (Either a (Blocker w m a))
 runBlockingT (Pure a) = return $ Left a
@@ -89,8 +91,18 @@ instance (Applicative m, Semigroupal w) => Monad (BlockingT w m) where
 instance (Semigroupal w) => MonadTrans (BlockingT w) where
   lift ma = Effect $ \x -> ma >>= x . Pure
 
-instance (MonadIO m, Semigroupal w) => MonadIO (BlockingT w m) where
-  liftIO = lift . liftIO
+instance (MonadBase b m, Semigroupal w) => MonadBase b (BlockingT w m) where
+  liftBase = lift . liftBase
+
+instance (MonadBaseControl b m, Semigroupal w) => MonadBaseControl b (BlockingT w m) where
+  type StM (BlockingT w m) a = StM m (Either a (Blocker w m a))
+  -- TODO: check this for correctness (and efficiency)
+  liftBaseWith f = lift $ liftBaseWith $ \runner -> f (runner . runBlockingT)
+  restoreM s = do
+    aOrBlck <- lift $ restoreM s
+    case aOrBlck of
+      Left a -> return a
+      Right (Blocker p c) -> BlockedOn p c
 
 data TaskList f x where
   Single :: f a -> (a -> x) -> TaskList f x

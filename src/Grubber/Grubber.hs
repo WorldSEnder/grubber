@@ -3,18 +3,24 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Grubber.Grubber
 ( GrubberConfig(grubberRunLifecycle)
 , defaultGrubberCfg
 , FailureReason(..)
 , MonadRecipeGrub
+, MonadRecipeGrubAux
 , GrubberM
 , runGrubber
 , runGrubberDef
 , build
+, supplyFileTarget
+, supplyFileTargets
 ) where
 
-import Control.Monad.IO.Class
+import Control.Monad.Base
+import Control.Monad.Trans.Control
 import Control.Monad.Reader.Class
 import Control.Monad.Trans.Reader (ReaderT(..))
 import Control.Monad.Trans.Except
@@ -27,9 +33,16 @@ import Data.Functor.Compose
 import Data.Functor.Const
 import Data.GADT.Compare
 import Data.Dependent.Map as DM
+import Data.Constraint
+import Data.Reflection
+import Data.Proxy
 
 import Grubber.Types
 import Grubber.Blocking
+import Grubber.Filesystem
+import Grubber.Internal
+
+import System.IO
 
 data GrubberConfig = GrubberConfig
   { grubberRunLifecycle :: !Bool
@@ -51,7 +64,10 @@ instance HasBuildCache k v (GrubberEnv k v) where
   buildCache inner s = (\nc -> s {gsBuildCache = nc}) <$> inner (gsBuildCache s)
 
 newtype GrubberM k v a = GrubberM { runGrubberM :: ReaderT (GrubberEnv k v) IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, LocallyIO)
+  deriving (Functor, Applicative, Monad, MonadFail, MonadThrow, MonadCatch, MonadMask)
+
+deriving instance MonadBase IO (GrubberM k v)
+deriving instance MonadBaseControl IO (GrubberM k v)
 
 deriving via (ReaderT (GrubberEnv k v) IO)
   instance MonadReader (GrubberEnv k v) (GrubberM k v)
@@ -59,7 +75,7 @@ deriving via (ReaderT (GrubberEnv k v) IO)
 instance MonadRestrictedIO (GrubberM k v) where
   liftOptionalIO act = do
     shouldRun <- GrubberM $ asks (grubberRunLifecycle . gsCfg)
-    if shouldRun then GrubberM (liftIO act) else pure ()
+    if shouldRun then GrubberM (liftBase act) else pure ()
   -- liftIdempotentIO = GrubberM . liftIO
 
 runGrubber :: GrubberConfig -> GrubberM k v r -> IO r
@@ -69,8 +85,6 @@ runGrubber cfg m = do
 
 runGrubberDef :: GrubberM k v r -> IO r
 runGrubberDef = runGrubber defaultGrubberCfg
-
-type MonadRecipeGrub = MonadRestrictedIO
 
 data FailureReason k x
   = NoRecipeFound (k x)
@@ -108,14 +122,31 @@ data TransactionState k v
   , tsBuildCache :: BuildCache k v
   }
 
-data AsyncResult f v r = forall x. r ~ v x => AsyncResult (Async (BuildResult f v x))
+data AsyncResult f v m r = forall x. r ~ v x => AsyncResult (Async (StM (ExceptT f m) (v x)))
 
 -- the monad to use to actually *run* a recipe in.
-newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: BlockingListT (AsyncResult (f x) v) (ExceptT (f x) m) r }
+newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m) r }
   deriving (Functor, Applicative, Monad, MonadRestrictedIO)
 
+deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
+deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v m)
+
+instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
+  readFile (FileReadToken fp) hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
+    liftBaseWith (\runInBase -> withBinaryFile fp ReadMode $ runInBase . hdl) >>= restoreM
+
+instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
+  type FileWriteToken (RecipeEnvT x f k v m) = FilePath
+  writeFile fp hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
+    liftBaseWith (\runInBase -> withBinaryFile fp WriteMode $ runInBase . hdl) >>= restoreM
+  toReadToken = return . FileReadToken
+
+instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)
+instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) where
+  internalDict _ = Dict
+
 scheduleAsync :: forall e f k v m x.
-                 (MonadRestrictedIO m, LocallyIO m, MonadCatch m)
+                 (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
               => Scheduler (RecipeEnvT x f k v m) e k v x
               -> Scheduler (ExceptT (f x) m) e k v x
 scheduleAsync scheduleInner resolveDep target reci =
@@ -123,40 +154,34 @@ scheduleAsync scheduleInner resolveDep target reci =
   where
     liftedResolve :: forall y. k y -> RecipeEnvT x f k v m (v y)
     liftedResolve key = RecipeEnvT $ do
-      as <- lift .  lift $ locallyIO (runExceptT $ resolveDep key) async
-      block $ AsyncResult as
-    waitResultSTM :: forall y. AsyncResult (f x) v y -> ExceptT (f x) STM y
+      as <- lift .  lift $ liftBaseWith (\unlift -> async (unlift $ runExceptT $ resolveDep key))
+      block (AsyncResult as :: AsyncResult (f x) v m (v y))
+    waitResultSTM :: forall y. AsyncResult (f x) v m y -> ExceptT (f x) m y
     waitResultSTM (AsyncResult br) = do
-      res <- lift $ waitSTM br
-      case res of
+      stmRes <- liftBase $ atomically $ waitSTM br
+      res2 <- lift $ restoreM stmRes
+      case res2 of
         Left failed -> throwE failed
         Right ok -> return ok
     -- TODO: shortcurcuit on failed dependency and cancel remaining active tasks.
     -- NOTE: canceling might be wrong, when other tasks are waiting on the same dependency.
-    unblockAsyncList :: MonadIO m => TaskList (AsyncResult (f x) v) b -> ExceptT (f x) m b
-    unblockAsyncList = ExceptT . liftIO . atomically . runExceptT . elimTaskListA waitResultSTM
-
-newtype Nat m n = NatMorph { (|~>) :: forall x. m x -> n x }
-
-getReaderUnlift :: Monad m => ReaderT r m (Nat (ReaderT r m) m)
-getReaderUnlift = ReaderT $ \env -> return $ NatMorph $ \rdr -> runReaderT rdr env
+    unblockAsyncList :: MonadBase IO m => TaskList (AsyncResult (f x) v m) b -> ExceptT (f x) m b
+    unblockAsyncList = elimTaskListA waitResultSTM
 
 schedulerExceptReader :: Monad m
                       => Scheduler (ExceptT f m) e k v x
                       -> Scheduler (ExceptT f (ReaderT r m)) e k v x
-schedulerExceptReader scheduleInner resolver target reci = do
-  rdrNat <- lift getReaderUnlift
-  mapExceptT lift $ scheduleInner (mapExceptT (rdrNat |~>) . resolver) target reci
+schedulerExceptReader scheduleInner resolver target reci = ExceptT $ liftWith $ \runner ->
+  runExceptT $ scheduleInner (mapExceptT runner . resolver) target reci
 
-type RecipeM k v m = ReaderT (TransactionState k v) m
-type SchedulerM k v m x = ExceptT (FailureReason k x) (RecipeM k v m)
+type SchedulerM k v m x = ExceptT (FailureReason k x) (ReaderT (TransactionState k v) m)
 
-scheduleCoop :: (MonadIO m, GCompare k)
+scheduleCoop :: (MonadBase IO m, GCompare k)
              => Scheduler (SchedulerM k v m x) e k v x
              -> Scheduler (SchedulerM k v m x) e k v x
 scheduleCoop scheduleInner resolveDep target reci = do
   targetInfo <- asks tsBuiltTargets
-  strat <- liftIO . atomically $ do
+  strat <- liftBase . atomically $ do
     buildInfo <- readTVar targetInfo
     (promise, newBuildInfo) <- getCompose $ flip (DM.alterF target) buildInfo $ \x ->
       Compose $ case x of
@@ -168,10 +193,10 @@ scheduleCoop scheduleInner resolveDep target reci = do
     return promise
   case strat of
     Left (Built res)        -> ExceptT $ return res
-    Left (InFlight promise) -> ExceptT $ liftIO . atomically $ readTMVar promise
+    Left (InFlight promise) -> ExceptT $ liftBase . atomically $ readTMVar promise
     Right promise           -> ExceptT $ do
       val <- runExceptT $ scheduleInner resolveDep target reci
-      liftIO . atomically $ putTMVar promise val
+      liftBase . atomically $ putTMVar promise val
       return val
 
 newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
@@ -179,17 +204,19 @@ newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
 scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
 
+type MonadRecipeGrub = '[MonadRestrictedIO, HasInternalOperations, FileReading]
+
 build :: forall e k v m.
-         (MonadRestrictedIO m, LocallyIO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
+         (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
       => (forall x. FailureReason k x -> m (v x))
       -> Build m MonadRecipeGrub k v
 build onFailure recipes globalGoal = do
-  m <- liftIO $ newTVarIO empty
+  m <- liftBase $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
   res <- runReaderT (runExceptT $ runBuildT $ mkTarget globalGoal) $ TransactionState m c
   finalize res
   where
-    grubberScheduler :: forall y. Scheduler (BuildT k v m y) MonadRestrictedIO k v y
+    grubberScheduler :: forall y. Scheduler (BuildT k v m y) MonadRecipeGrub k v y
     grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync scheduleResolver
 
     catchErrorInDep k err = BuildT $ catchE (runBuildT err) (throwE . DepFailed k)
@@ -197,3 +224,14 @@ build onFailure recipes globalGoal = do
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
+
+type MonadRecipeGrubAux = '[MonadRestrictedIO, HasInternalOperations, FileReading, FileWriting, FileWritingAux]
+
+-- | Supply the filepath the recipe is allowed to write to
+supplyFileTarget :: FilePath -> Recipe MonadRecipeGrubAux k v x -> Recipe MonadRecipeGrub k v x
+supplyFileTarget fp reci = recipe' $ \(resolv :: forall x. k x -> m (v x)) ->
+  withInternalOps (Proxy :: Proxy m) $ reify fp $ \ps ->
+    runRRT ps $ runResolver (ReflectingReaderT . resolv) (runRecipe reci)
+
+supplyFileTargets :: (forall x. k x -> FilePath) -> RecipeBook MonadRecipeGrubAux k v -> RecipeBook MonadRecipeGrub k v
+supplyFileTargets fps book arg = supplyFileTarget (fps arg) <$> book arg
