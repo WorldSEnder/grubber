@@ -17,10 +17,10 @@ import Data.Dependent.Sum (DSum((:=>)))
 import Grubber.Blocking
 import Grubber.Types
 import Grubber.Grubber
-import Grubber.Filesystem
+--import Grubber.Filesystem
 
 import Control.Concurrent.MVar (newMVar, withMVar, MVar)
-import System.IO (hShow)
+--import System.IO (hShow)
 import System.IO.Unsafe (unsafePerformIO)
 
 data Dependency a where
@@ -129,7 +129,7 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         ~(SomeResult b) <- resolve DBot
         ~(SomeResult l) <- b `seq` resolve DLeft
         ~(SomeResult r) <- l `seq` resolve DRight
-        withReadFile (FileReadToken "./stack.yaml") $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
+        --withReadFile _ $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
         r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
         return $ SomeResult ()
     ]

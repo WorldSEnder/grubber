@@ -130,12 +130,13 @@ deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
 deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v m)
 
 instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
-  withReadFile = withReadFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
+  type FileReadToken (RecipeEnvT x f k v m) = GrubberReadToken
+  withReadFile (GrubberReadToken fp) = withReadFileB fp \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
 
 instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
   type FileWriteToken (RecipeEnvT x f k v m) = FilePath
   withWriteFile = withWriteFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))
-  toReadToken = return . FileReadToken
+  toReadToken = return . GrubberReadToken
 
 instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)
 instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) where
@@ -200,7 +201,18 @@ newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
 scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
 
-type MonadRecipeGrub = '[MonadRestrictedIO, HasInternalOperations, FileReading]
+
+class ( MonadRestrictedIO m
+      , FileReading m
+      , FileReadToken m ~ GrubberReadToken
+      ) => GrubberPublicInterface m
+instance
+      ( MonadRestrictedIO m
+      , FileReading m
+      , FileReadToken m ~ GrubberReadToken
+      ) => GrubberPublicInterface m
+
+type MonadRecipeGrub = '[GrubberPublicInterface, HasInternalOperations]
 
 build :: forall e k v m.
          (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
@@ -221,7 +233,7 @@ build onFailure recipes globalGoal = do
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
 
-type MonadRecipeGrubAux = '[MonadRestrictedIO, HasInternalOperations, FileReading, FileWriting, FileWritingAux]
+type MonadRecipeGrubAux = '[GrubberPublicInterface, HasInternalOperations, FileWriting, FileWritingAux]
 
 -- | Supply the filepath the recipe is allowed to write to
 supplyFileTarget :: FilePath -> Recipe MonadRecipeGrubAux k v x -> Recipe MonadRecipeGrub k v x

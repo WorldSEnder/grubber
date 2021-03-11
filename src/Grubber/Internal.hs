@@ -1,6 +1,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 module Grubber.Internal
 ( HasInternalOperations(..)
+, GrubberReadToken(..)
 , InternalOperations
 , withInternalOps
 , internalIO
@@ -13,10 +14,12 @@ import Data.Constraint
 
 import Grubber.Filesystem
 
+newtype GrubberReadToken = GrubberReadToken FilePath
 class
   ( MonadBaseControl IO m
   , FileWriting m
   , FileWriteToken m ~ FilePath
+  , FileReadToken m ~ GrubberReadToken
   ) => InternalOperations m
 
 class HasInternalOperations m where

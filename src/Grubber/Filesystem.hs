@@ -4,8 +4,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ConstraintKinds #-}
 module Grubber.Filesystem
-( FileReadToken(..)
-, ReflectingReaderT(..)
+( ReflectingReaderT(..)
 , runRRT
 , MonadReadAux(..)
 , FileReading(..)
@@ -25,7 +24,7 @@ import Data.Proxy
 
 import Grubber.Types ( MonadRestrictedIO, WithResolverT(..), runResolver, Resolver(..) )
 
-newtype FileReadToken = FileReadToken FilePath
+-- newtype FileReadToken = FileReadToken FilePath
 
 newtype ReflectingReaderT aux s m a = ReflectingReaderT { _runRRT :: m a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadRestrictedIO, FileReading, FileWriting)
@@ -48,18 +47,20 @@ instance (Monad m, Reifies s aux) => MonadReadAux aux (ReflectingReaderT aux s m
   askAux = ReflectingReaderT $ pure $ reflect (Proxy :: Proxy s)
 
 class FileReading m where
-  withReadFile :: FileReadToken -> (Handle -> m r) -> m r
+  type FileReadToken m
+  withReadFile :: FileReadToken m -> (Handle -> m r) -> m r
 
 withFileB :: MonadBaseControl IO m => FilePath -> IOMode -> (Handle -> m b) -> m b
 withFileB fp mode hdl = control $ \runInBase -> withBinaryFile fp mode $ runInBase . hdl
 
-withReadFileB :: MonadBaseControl IO m => FileReadToken -> (Handle -> m b) -> m b
-withReadFileB (FileReadToken fp) = withFileB fp ReadMode
+withReadFileB :: MonadBaseControl IO m => FilePath -> (Handle -> m b) -> m b
+withReadFileB fp = withFileB fp ReadMode
 
 withWriteFileB :: MonadBaseControl IO m => FilePath -> (Handle -> m b) -> m b
 withWriteFileB fp = withFileB fp WriteMode
 
 instance (Monad m, FileReading m) => FileReading (WithResolverT k v m) where
+  type FileReadToken (WithResolverT k v m) = FileReadToken m
   withReadFile fp hdl = WithResolver $ ReaderT $ \(Resolver r) -> withReadFile fp (runResolver r . hdl)
 
 class FileWriting m where
@@ -69,7 +70,7 @@ class FileWriting m where
   -- Anyway, the only way to access a token should thus be to get one externally.
   type FileWriteToken m
   withWriteFile :: FileWriteToken m -> (Handle -> m r) -> m r
-  toReadToken :: FileWriteToken m -> m FileReadToken
+  toReadToken :: FileWriteToken m -> m (FileReadToken m)
 
 class (FileWriting m, MonadReadAux (FileWriteToken m) m) => FileWritingAux m
 instance (FileWriting m, MonadReadAux (FileWriteToken m) m) => FileWritingAux m
