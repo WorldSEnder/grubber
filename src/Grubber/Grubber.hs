@@ -32,7 +32,7 @@ import Control.Monad.Catch
 import Data.Functor.Compose
 import Data.Functor.Const
 import Data.GADT.Compare
-import Data.Dependent.Map as DM
+import Data.Dependent.Map as DM hiding ((\\))
 import Data.Constraint
 import Data.Reflection
 import Data.Proxy
@@ -41,8 +41,6 @@ import Grubber.Types
 import Grubber.Blocking
 import Grubber.Filesystem
 import Grubber.Internal
-
-import System.IO
 
 data GrubberConfig = GrubberConfig
   { grubberRunLifecycle :: !Bool
@@ -132,13 +130,11 @@ deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
 deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v m)
 
 instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
-  readFile (FileReadToken fp) hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
-    control $ \runInBase -> withBinaryFile fp ReadMode $ runInBase . hdl
+  withReadFile = withReadFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
 
 instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
   type FileWriteToken (RecipeEnvT x f k v m) = FilePath
-  writeFile fp hdl = withDict (internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))) $
-    control $ \runInBase -> withBinaryFile fp WriteMode $ runInBase . hdl
+  withWriteFile = withWriteFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))
   toReadToken = return . FileReadToken
 
 instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)
@@ -154,7 +150,7 @@ scheduleAsync scheduleInner resolveDep target reci =
   where
     liftedResolve :: forall y. k y -> RecipeEnvT x f k v m (v y)
     liftedResolve key = RecipeEnvT $ do
-      as <- lift .  lift $ liftBaseWith (\unlift -> async (unlift $ runExceptT $ resolveDep key))
+      as <- lift .  lift $ liftBaseWith $ \unlift -> async (unlift $ runExceptT $ resolveDep key)
       block (AsyncResult as :: AsyncResult (f x) v m (v y))
     waitResultSTM :: forall y. AsyncResult (f x) v m y -> ExceptT (f x) m y
     waitResultSTM (AsyncResult br) = do

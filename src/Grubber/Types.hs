@@ -14,6 +14,7 @@ module Grubber.Types
 , scheduleResolver
 , DependencyResolver(..)
 , WithResolverT(..)
+, Resolver(..)
 , runResolver
 , RecipeBook
 , Scheduler
