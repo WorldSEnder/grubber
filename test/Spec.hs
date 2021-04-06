@@ -2,6 +2,8 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE DataKinds #-}
 
 import Test.Tasty
 import Test.Tasty.HUnit (testCase)
@@ -29,6 +31,9 @@ data Dependency a where
 data Result a where
   SomeResult :: a -> Result a
 
+instance Applicative m => DependencyOuput m Result where
+  fromRecipeOutput _ = pure . SomeResult
+
 testRecipe :: IORef Bool -> Recipe (MonadBase IO) Dependency Result Integer
 testRecipe signalOk = recipe do
   ~(SomeResult x) <- resolve $ SomeDep 4
@@ -36,7 +41,7 @@ testRecipe signalOk = recipe do
   -- depends on ApplicativeDo doing the right thing.
   liftBase $ writeIORef signalOk False
   ~(SomeResult y) <- resolve $ SomeDep 5
-  return $ SomeResult $ x + y
+  return $ x + y
 
 mockResolve :: Dependency a -> BlockingListT Dependency IO (Result a)
 mockResolve dep@(SomeDep _) = block (SomeResult <$> singletonF dep)
@@ -67,6 +72,8 @@ data DiamondTag a where
 $(deriveGEq ''DiamondTag)
 $(deriveGCompare ''DiamondTag)
 
+type instance RecipeOutput (x :: DiamondTag a) = ()
+
 data DiamondTestEnv
   = DiamondTestEnv
   { counterTop :: IORef Int
@@ -75,30 +82,30 @@ data DiamondTestEnv
   , counterBot :: IORef Int
   }
 
-buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag Result (Result x)
+buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag Result (RecipeOutput x)
 buildExample env = build onFailure (`DM.lookup` rules) where
   rules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   rules = DM.fromList
     [ DBot   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterBot env) (+ 1)
-        return $ SomeResult ()
+        return ()
     , DLeft  :=> recipe do
         liftOptionalIO $ modifyIORef' (counterLeft env) (+ 1)
         ~(SomeResult _) <- resolve DBot
-        return $ SomeResult ()
+        return ()
     , DRight :=> recipe do
         liftOptionalIO $ modifyIORef' (counterRight env) (+ 1)
         ~(SomeResult _) <- resolve DLeft
         ~(SomeResult _) <- resolve DBot
-        return $ SomeResult ()
+        return ()
     , DTop   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterTop env) (+ 1)
         ~(SomeResult _) <- resolve DRight
         ~(SomeResult _) <- resolve DLeft
-        return $ SomeResult ()
+        return ()
     ]
 
-onFailure :: FailureReason k x -> GrubberM DiamondTag Result (Result x)
+onFailure :: FailureReason k x -> GrubberM DiamondTag Result y
 onFailure _ = liftBase $ assertFailure "shouldn't fail to run"
 
 globalPutStrLock :: MVar ()
@@ -108,22 +115,22 @@ globalPutStrLock = unsafePerformIO $ newMVar ()
 atomicPutStrLn :: String -> IO ()
 atomicPutStrLn str = withMVar globalPutStrLock $ \_ -> putStrLn str
 
-_delayedExample :: DiamondTag x -> GrubberM DiamondTag Result (Result x)
+_delayedExample :: DiamondTag x -> GrubberM DiamondTag Result (RecipeOutput x)
 _delayedExample = build onFailure (`DM.lookup` delayedRules) where
   delayedRules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
   delayedRules = DM.fromList
     [ DBot    :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start bot" >> threadDelay 2000000 >> atomicPutStrLn "end bot"
-        return $ SomeResult ()
+        return ()
     , DLeft   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start left" >> threadDelay 3000000 >> atomicPutStrLn "end left"
-        return $ SomeResult ()
+        return ()
     , DRight  :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start right"
         ~(SomeResult b) <- resolve DBot
         ~(SomeResult l) <- resolve DLeft
         b `seq` l `seq` liftOptionalIO $ threadDelay 2000000 >> atomicPutStrLn "end right"
-        return $ SomeResult ()
+        return ()
     , DTop   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start top"
         ~(SomeResult b) <- resolve DBot
@@ -131,7 +138,7 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         ~(SomeResult r) <- l `seq` resolve DRight
         --withReadFile _ $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
         r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
-        return $ SomeResult ()
+        return ()
     ]
 
 grubberSpecCfg :: GrubberConfig

@@ -9,6 +9,7 @@ module Grubber.Grubber
 ( GrubberConfig(grubberRunLifecycle)
 , defaultGrubberCfg
 , FailureReason(..)
+, DependencyOuput(..)
 , MonadRecipeGrub
 , MonadRecipeGrubAux
 , GrubberM
@@ -89,14 +90,14 @@ data FailureReason k x
   | forall y. DepFailed (k y) (FailureReason k y)
   | RuntimeError SomeException
 
-type BuildResult f a x = Either f (a x)
+type BuildResult k x = Either (FailureReason k x) (RecipeOutput x)
 
-data TransactionValue k v x
+data TransactionValue k x
   = InFlight
-  { _tvCompletion :: TMVar (BuildResult (FailureReason k x) v x)
+  { _tvCompletion :: TMVar (BuildResult k x)
   }
   | Built
-  { _tvResult :: BuildResult (FailureReason k x) v x
+  { _tvResult :: BuildResult k x
   }
 
 data CachedResult k v x = CachedResult
@@ -116,7 +117,7 @@ class HasBuildCache k v e where
 
 data TransactionState k v
   = TransactionState
-  { tsBuiltTargets :: TVar (DMap k (TransactionValue k v))
+  { tsBuiltTargets :: TVar (DMap k (TransactionValue k))
   , tsBuildCache :: BuildCache k v
   }
 
@@ -201,7 +202,6 @@ newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
 scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
 
-
 class ( MonadRestrictedIO m
       , FileReading m
       , FileReadToken m ~ GrubberReadToken
@@ -214,9 +214,12 @@ instance
 
 type MonadRecipeGrub = '[GrubberPublicInterface, HasInternalOperations]
 
+class DependencyOuput m v where
+  fromRecipeOutput :: k x -> RecipeOutput x -> m (v x)
+
 build :: forall e k v m.
-         (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k)
-      => (forall x. FailureReason k x -> m (v x))
+         (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k, DependencyOuput m v)
+      => (forall x. FailureReason k x -> m (RecipeOutput x))
       -> Build m MonadRecipeGrub k v
 build onFailure recipes globalGoal = do
   m <- liftBase $ newTVarIO empty
@@ -227,8 +230,10 @@ build onFailure recipes globalGoal = do
     grubberScheduler :: forall y. Scheduler (BuildT k v m y) MonadRecipeGrub k v y
     grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync scheduleResolver
 
-    catchErrorInDep k err = BuildT $ catchE (runBuildT err) (throwE . DepFailed k)
-    mkTarget = runSchedulerX (BuildT . throwE . NoRecipeFound) grubberScheduler catchErrorInDep recipes
+    catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
+    catchErrorInDep k err = BuildT $ catchE (runBuildT err >>= lift . lift . fromRecipeOutput k) (throwE . DepFailed k)
+
+    mkTarget = runSchedulerX (BuildT . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok

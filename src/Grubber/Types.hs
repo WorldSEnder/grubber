@@ -8,6 +8,7 @@
 module Grubber.Types
 ( Recipe
 , BuildEnv
+, RecipeOutput
 , recipe
 , recipe'
 , runRecipe
@@ -71,22 +72,25 @@ deriving via (MonadRestrictedIOViaTrans (ExceptT r) m)
 deriving via (MonadRestrictedIOViaTrans (BlockingT w) m)
   instance (Semigroupal w, MonadRestrictedIO m) => MonadRestrictedIO (BlockingT w m)
 
-class DependencyResolver k v f where
-  resolve :: k a -> f (v a)
-
 type family BuildEnv (e :: k) (f :: Type -> Type) :: Constraint
 type instance BuildEnv c f = c f
 type instance BuildEnv '[] f = ()
 type instance BuildEnv (e ': es) f = (BuildEnv e f, BuildEnv es f)
 
+type family RecipeOutput (e :: k) :: Type
+type instance RecipeOutput e = e
+
+class DependencyResolver k v f where
+  resolve :: k a -> f (v a)
+
 -- | A recipe for producing a value of type 'b' in any environment fulfilling 'c',
 -- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
-newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f) => WithResolverT k v f (v x) }
+newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f) => WithResolverT k v f (RecipeOutput x) }
 
-recipe :: (forall f. BuildEnv e f => WithResolverT k v f (v x)) -> Recipe e k v x
+recipe :: (forall f. BuildEnv e f => WithResolverT k v f (RecipeOutput x)) -> Recipe e k v x
 recipe = Recipe
 
-recipe' :: (forall f. BuildEnv e f => (forall a. k a -> f (v a)) -> f (v x)) -> Recipe e k v x
+recipe' :: (forall f. BuildEnv e f => (forall a. k a -> f (v a)) -> f (RecipeOutput x)) -> Recipe e k v x
 recipe' reci = Recipe $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci resolv
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
@@ -107,38 +111,41 @@ runResolver :: (forall x. k x -> m (v x)) -> WithResolverT k v m a -> m a
 runResolver r task = runReaderT (runResolver_ task) (Resolver r)
 
 type Scheduler m e k v x = (forall y. k y -> m (v y))
-                         -> k x -> Recipe e k v x -> m (v x)
+                         -> k x -> Recipe e k v x -> m (RecipeOutput x)
 
 scheduleResolver :: (BuildEnv e m)
                  => Scheduler m e k v x
-scheduleResolver deps _ reci = runResolver deps $ runRecipe reci 
+scheduleResolver deps _ reci = runResolver deps $ runRecipe reci
 
 type RecipeBook c k v = forall x. k x -> Maybe (Recipe c k v x)
 
 -- | A build system working in a monad 'm', most likely supporting some kind of state,
 -- implements refreshing a key 'k x' given a book of rules to run.
-type Build m e k v = forall x. RecipeBook e k v -> k x -> m (v x)
-type BuildX m e k v = forall x. RecipeBook e k v -> k x -> m x (v x)
+type Build m e k v = forall x. RecipeBook e k v -> k x -> m (RecipeOutput x)
+type BuildX m e k v = forall x. RecipeBook e k v -> k x -> m x (RecipeOutput x)
 
 runScheduler :: forall m e k v. ()
-             => (forall x. k x -> m (v x))
+             => (forall x. k x -> m (RecipeOutput x))
+             -> (forall y. k y -> m (RecipeOutput y) -> m (v y))
              -> (forall x. Scheduler m e k v x)
              -> Build m e k v
-runScheduler onNoRecipe schedule recipes = go
+runScheduler onNoRecipe augmentResult schedule recipes = go
   where
-    go :: forall y. k y -> m (v y)
+    resolv :: forall y. k y -> m (v y)
+    resolv k = augmentResult k $ go k
+    go :: forall y. k y -> m (RecipeOutput y)
     go k  = case recipes k of
               Nothing -> onNoRecipe k
-              Just reci -> schedule go k reci
+              Just reci -> schedule resolv k reci
 
 runSchedulerX :: forall m e k v. ()
-              => (forall x. k x -> m x (v x))
+              => (forall x. k x -> m x (RecipeOutput x))
+              -> (forall x y. k y -> m y (RecipeOutput y) -> m x (v y))
               -> (forall x. Scheduler (m x) e k v x)
-              -> (forall x y r. k y -> m y r -> m x r)
               -> BuildX m e k v
-runSchedulerX onNoRecipe schedule inDep recipes = go
+runSchedulerX onNoRecipe augmentDepResult schedule recipes = go
   where
-    go :: forall y. k y -> m y (v y)
+    go :: forall y. k y -> m y (RecipeOutput y)
     go k  = case recipes k of
               Nothing -> onNoRecipe k
-              Just reci -> schedule (\l -> inDep l $ go l) k reci
+              Just reci -> schedule (\l -> augmentDepResult l $ go l) k reci
