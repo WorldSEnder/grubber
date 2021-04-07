@@ -127,7 +127,7 @@ scheduleResolver :: (BuildEnv e m x)
                  => Scheduler m e k v x
 scheduleResolver deps _ reci = runResolver deps $ runRecipe reci
 
-type RecipeBook c k v = forall x. k x -> Maybe (Recipe c k v x)
+type RecipeBook e k v = forall x. k x -> Maybe (Recipe e k v x)
 
 -- | A build system working in a monad 'm', most likely supporting some kind of state,
 -- implements refreshing a key 'k x' given a book of rules to run.

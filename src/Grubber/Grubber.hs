@@ -16,6 +16,7 @@ module Grubber.Grubber
 , SupplyAuxInput(..)
 , MonadRecipeGrub
 , RecipeGrub
+, RecipeBookGrub
 , GrubberM
 , runGrubber
 , runGrubberDef
@@ -232,6 +233,8 @@ type MonadRecipeGrub = ('(,) HasInternalOperations GrubberPublicInterface)
 -- MonadRecipeGrub
 type RecipeGrub :: forall k2. forall kk -> (k2 -> *) -> (k2 -> *) -> kk -> *
 type RecipeGrub kk = Recipe (MonadRecipeGrub @kk)
+type RecipeBookGrub :: forall k. (k -> *) -> (k -> *) -> *
+type RecipeBookGrub (k :: kk -> *) v = RecipeBook (MonadRecipeGrub @kk) k v
 
 class SupplyAuxInput k m where
   supplyAuxInput :: k x -> m (AuxInput x)

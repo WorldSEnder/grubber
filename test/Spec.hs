@@ -4,8 +4,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
 import Test.Tasty
 import Test.Tasty.HUnit (testCase)
@@ -15,6 +13,7 @@ import Control.Monad.Base
 import Control.Concurrent (threadDelay)
 import Data.IORef
 import Data.GADT.Compare.TH
+import Data.GADT.Compare
 import Data.Dependent.Map as DM
 import Data.Dependent.Sum (DSum((:=>)))
 
@@ -99,10 +98,13 @@ data DiamondTestEnv
   , counterBot :: IORef Int
   }
 
+fromRulesDMap :: GCompare k => DMap k (Recipe e k v) -> RecipeBook e k v
+fromRulesDMap m k = DM.lookup k m
+
 buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
-buildExample env = build onFailure (`DM.lookup` rules) where
-  rules :: DMap DiamondTag (RecipeGrub _ DiamondTag DiamondResult)
-  rules = DM.fromList
+buildExample env = build onFailure rules where
+  rules :: RecipeBookGrub DiamondTag DiamondResult
+  rules = fromRulesDMap $ DM.fromList
     [ DBot   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterBot env) (+ 1)
         return ()
@@ -135,9 +137,9 @@ atomicPutStrLn :: String -> IO ()
 atomicPutStrLn str = withMVar globalPutStrLock $ \_ -> putStrLn str
 
 _delayedExample :: DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
-_delayedExample = build onFailure (`DM.lookup` delayedRules) where
-  delayedRules :: DMap DiamondTag (RecipeGrub _ DiamondTag DiamondResult)
-  delayedRules = DM.fromList
+_delayedExample = build onFailure delayedRules where
+  delayedRules :: RecipeBookGrub DiamondTag DiamondResult
+  delayedRules = fromRulesDMap $ DM.fromList
     [ DBot    :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start bot" >> threadDelay 2000000 >> atomicPutStrLn "end bot"
         return ()
@@ -154,9 +156,9 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         liftOptionalIO $ atomicPutStrLn "start top"
         ~(DiamondResult b) <- resolve DBot
         ~(DiamondResult l) <- b `seq` resolve DLeft
-        ~(DiamondResult r) <- l `seq` resolve DRight
+        ~(DiamondResult r) <- resolve DRight
         --withReadFile _ $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
-        r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
+        l `seq` r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
         return ()
     ]
 
