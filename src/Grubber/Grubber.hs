@@ -1,23 +1,25 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeApplications #-}
 module Grubber.Grubber
 ( GrubberConfig(grubberRunLifecycle)
 , defaultGrubberCfg
 , FailureReason(..)
 , DependencyOuput(..)
+, SupplyAuxInput(..)
 , MonadRecipeGrub
-, MonadRecipeGrubAux
+, RecipeGrub
 , GrubberM
 , runGrubber
 , runGrubberDef
 , build
-, supplyFileTarget
-, supplyFileTargets
 ) where
 
 import Control.Monad.Base
@@ -124,7 +126,7 @@ data TransactionState k v
 data AsyncResult f v m r = forall x. r ~ v x => AsyncResult (Async (StM (ExceptT f m) (v x)))
 
 -- the monad to use to actually *run* a recipe in.
-newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m) r }
+newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: ReaderT (k x) (BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)) r }
   deriving (Functor, Applicative, Monad, MonadRestrictedIO)
 
 deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
@@ -143,15 +145,29 @@ instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)
 instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) where
   internalDict _ = Dict
 
+instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) x where
+  getAuxInput = RecipeEnvT $ ReaderT $ \trgt -> lift $ lift $ supplyAuxInput trgt
+
+instance
+  ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m)
+  => GrubberPublicInterface (RecipeEnvT x f k v m) x
+
+type UnwrappedRecipeT x f k v m = BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)
+
+scheduleReadInputs :: Scheduler (RecipeEnvT x f k v m) e k v x
+                   -> Scheduler (UnwrappedRecipeT x f k v m) e k v x
+scheduleReadInputs scheduleInner resolveDep target reci =
+  runReaderT (runRecipeT $ scheduleInner (\k -> RecipeEnvT $ ReaderT $ \_ -> resolveDep k) target reci) target
+
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
-              => Scheduler (RecipeEnvT x f k v m) e k v x
+              => Scheduler (UnwrappedRecipeT x f k v m) e k v x
               -> Scheduler (ExceptT (f x) m) e k v x
 scheduleAsync scheduleInner resolveDep target reci =
-  loopBlockingT unblockAsyncList (runRecipeT $ scheduleInner liftedResolve target reci)
+  loopBlockingT unblockAsyncList (scheduleInner liftedResolve target reci)
   where
-    liftedResolve :: forall y. k y -> RecipeEnvT x f k v m (v y)
-    liftedResolve key = RecipeEnvT $ do
+    liftedResolve :: forall y. k y -> UnwrappedRecipeT x f k v m (v y)
+    liftedResolve key = do
       as <- lift .  lift $ liftBaseWith $ \unlift -> async (unlift $ runExceptT $ resolveDep key)
       block (AsyncResult as :: AsyncResult (f x) v m (v y))
     waitResultSTM :: forall y. AsyncResult (f x) v m y -> ExceptT (f x) m y
@@ -202,33 +218,43 @@ newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
 scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
 
+type GrubberPublicInterface :: forall k. (* -> *) -> k -> Constraint
 class ( MonadRestrictedIO m
       , FileReading m
       , FileReadToken m ~ GrubberReadToken
-      ) => GrubberPublicInterface m
-instance
+      , AccessAuxInput m x
+      ) => GrubberPublicInterface m x
+
+type MonadRecipeGrub :: forall k. ((* -> *) -> Constraint, (* -> *) -> k -> Constraint)
+type MonadRecipeGrub = ('(,) HasInternalOperations GrubberPublicInterface)
+
+-- TODO: investigate whether we can make the "forall kk" implicit and still apply it to
+-- MonadRecipeGrub
+type RecipeGrub :: forall k2. forall kk -> (k2 -> *) -> (k2 -> *) -> kk -> *
+type RecipeGrub kk = Recipe (MonadRecipeGrub @kk)
+
+class SupplyAuxInput k m where
+  supplyAuxInput :: k x -> m (AuxInput x)
+
+build :: forall e kk (k :: kk -> *) v m.
       ( MonadRestrictedIO m
-      , FileReading m
-      , FileReadToken m ~ GrubberReadToken
-      ) => GrubberPublicInterface m
-
-type MonadRecipeGrub = '[GrubberPublicInterface, HasInternalOperations]
-
-class DependencyOuput m v where
-  fromRecipeOutput :: k x -> RecipeOutput x -> m (v x)
-
-build :: forall e k v m.
-         (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m, MonadReader e m, HasBuildCache k v e, GCompare k, DependencyOuput m v)
+      , MonadBaseControl IO m
+      , MonadCatch m
+      , MonadReader e m
+      , HasBuildCache k v e
+      , GCompare k
+      , DependencyOuput k v m
+      , SupplyAuxInput k m)
       => (forall x. FailureReason k x -> m (RecipeOutput x))
-      -> Build m MonadRecipeGrub k v
+      -> Build m (MonadRecipeGrub @kk) k v
 build onFailure recipes globalGoal = do
   m <- liftBase $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
   res <- runReaderT (runExceptT $ runBuildT $ mkTarget globalGoal) $ TransactionState m c
   finalize res
   where
-    grubberScheduler :: forall y. Scheduler (BuildT k v m y) MonadRecipeGrub k v y
-    grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync scheduleResolver
+    grubberScheduler :: forall y. Scheduler (BuildT k v m y) (MonadRecipeGrub @kk) k v y
+    grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync $ scheduleReadInputs scheduleResolver
 
     catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
     catchErrorInDep k err = BuildT $ catchE (runBuildT err >>= lift . lift . fromRecipeOutput k) (throwE . DepFailed k)
@@ -238,13 +264,8 @@ build onFailure recipes globalGoal = do
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
 
-type MonadRecipeGrubAux = '[GrubberPublicInterface, HasInternalOperations, FileWriting, FileWritingAux]
-
--- | Supply the filepath the recipe is allowed to write to
-supplyFileTarget :: FilePath -> Recipe MonadRecipeGrubAux k v x -> Recipe MonadRecipeGrub k v x
-supplyFileTarget fp reci = recipe' $ \(resolv :: forall x. k x -> m (v x)) ->
-  withInternalOps (Proxy :: Proxy m) $ reify fp $ \ps ->
-    runRRT ps $ runResolver (ReflectingReaderT . resolv) (runRecipe reci)
-
-supplyFileTargets :: (forall x. k x -> FilePath) -> RecipeBook MonadRecipeGrubAux k v -> RecipeBook MonadRecipeGrub k v
-supplyFileTargets fps book arg = supplyFileTarget (fps arg) <$> book arg
+-- | Class of values that can be produced from recipe outputs.
+-- For example, even though recipes for files don't return the written file content,
+-- depending on them will return a FileReadToken.
+class DependencyOuput k v m where
+  fromRecipeOutput :: k x -> RecipeOutput x -> m (v x)

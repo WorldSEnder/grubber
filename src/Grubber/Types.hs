@@ -1,6 +1,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DerivingVia #-}
@@ -24,6 +25,8 @@ module Grubber.Types
 , Build
 , BuildX
 , MonadRestrictedIO(..)
+, AuxInput
+, AccessAuxInput(..)
 ) where
 
 import Control.Monad.Trans.Reader
@@ -72,10 +75,14 @@ deriving via (MonadRestrictedIOViaTrans (ExceptT r) m)
 deriving via (MonadRestrictedIOViaTrans (BlockingT w) m)
   instance (Semigroupal w, MonadRestrictedIO m) => MonadRestrictedIO (BlockingT w m)
 
-type family BuildEnv (e :: k) (f :: Type -> Type) :: Constraint
-type instance BuildEnv c f = c f
-type instance BuildEnv '[] f = ()
-type instance BuildEnv (e ': es) f = (BuildEnv e f, BuildEnv es f)
+type family BuildEnv (e :: k) (f :: Type -> Type) (x :: k1) :: Constraint
+type instance BuildEnv c f _ = c f
+type instance BuildEnv c f x = c f x
+type instance BuildEnv '[] f _ = ()
+type instance BuildEnv (e ': es) f x = (BuildEnv e f x, BuildEnv es f x)
+type instance BuildEnv ('(,) a b) f x = (BuildEnv a f x, BuildEnv b f x)
+type instance BuildEnv ('(,,) a b c) f x = (BuildEnv a f x, BuildEnv b f x, BuildEnv c f x)
+type instance BuildEnv ('(,,,) a b c d) f x = (BuildEnv a f x, BuildEnv b f x, BuildEnv c f x, BuildEnv d f x)
 
 type family RecipeOutput (e :: k) :: Type
 type instance RecipeOutput e = e
@@ -85,12 +92,12 @@ class DependencyResolver k v f where
 
 -- | A recipe for producing a value of type 'b' in any environment fulfilling 'c',
 -- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
-newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f) => WithResolverT k v f (RecipeOutput x) }
+newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f x) => WithResolverT k v f (RecipeOutput x) }
 
-recipe :: (forall f. BuildEnv e f => WithResolverT k v f (RecipeOutput x)) -> Recipe e k v x
+recipe :: (forall f. BuildEnv e f x => WithResolverT k v f (RecipeOutput x)) -> Recipe e k v x
 recipe = Recipe
 
-recipe' :: (forall f. BuildEnv e f => (forall a. k a -> f (v a)) -> f (RecipeOutput x)) -> Recipe e k v x
+recipe' :: (forall f. BuildEnv e f x => (forall a. k a -> f (v a)) -> f (RecipeOutput x)) -> Recipe e k v x
 recipe' reci = Recipe $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci resolv
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
@@ -107,13 +114,16 @@ deriving instance MonadBaseControl b m => MonadBaseControl b (WithResolverT k v 
 instance DependencyResolver k v (WithResolverT k v m) where
   resolve key = WithResolver $ ReaderT $ \(Resolver r) -> r key
 
+instance AccessAuxInput m x => AccessAuxInput (WithResolverT k v m) x where
+  getAuxInput = WithResolver $ ReaderT $ const getAuxInput
+
 runResolver :: (forall x. k x -> m (v x)) -> WithResolverT k v m a -> m a
 runResolver r task = runReaderT (runResolver_ task) (Resolver r)
 
 type Scheduler m e k v x = (forall y. k y -> m (v y))
                          -> k x -> Recipe e k v x -> m (RecipeOutput x)
 
-scheduleResolver :: (BuildEnv e m)
+scheduleResolver :: (BuildEnv e m x)
                  => Scheduler m e k v x
 scheduleResolver deps _ reci = runResolver deps $ runRecipe reci
 
@@ -149,3 +159,8 @@ runSchedulerX onNoRecipe augmentDepResult schedule recipes = go
     go k  = case recipes k of
               Nothing -> onNoRecipe k
               Just reci -> schedule (\l -> augmentDepResult l $ go l) k reci
+
+type family AuxInput (e :: k) :: *
+
+class AccessAuxInput m x | m -> x where
+  getAuxInput :: m (AuxInput x)

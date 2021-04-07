@@ -4,6 +4,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE PartialTypeSignatures #-}
+{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
 import Test.Tasty
 import Test.Tasty.HUnit (testCase)
@@ -31,7 +33,7 @@ data Dependency a where
 data Result a where
   SomeResult :: a -> Result a
 
-instance Applicative m => DependencyOuput m Result where
+instance Applicative m => DependencyOuput Dependency Result m where
   fromRecipeOutput _ = pure . SomeResult
 
 testRecipe :: IORef Bool -> Recipe (MonadBase IO) Dependency Result Integer
@@ -66,13 +68,28 @@ blockingTests = testGroup "'Blocking' tests"
       readIORef signalOk @? "should not write to the IORef before blocking"
   ]
 
+data TestKind = TestKind
+type instance RecipeOutput 'TestKind = ()
 data DiamondTag a where
-  DBot, DLeft, DRight, DTop :: DiamondTag ()
+  DBot, DLeft, DRight, DTop :: DiamondTag 'TestKind
+data DiamondResult a where
+  DiamondResult :: () -> DiamondResult 'TestKind
 
 $(deriveGEq ''DiamondTag)
 $(deriveGCompare ''DiamondTag)
 
-type instance RecipeOutput (x :: DiamondTag a) = ()
+instance Applicative m => DependencyOuput DiamondTag DiamondResult m where
+  fromRecipeOutput DBot = pure . DiamondResult
+  fromRecipeOutput DLeft = pure . DiamondResult
+  fromRecipeOutput DRight = pure . DiamondResult
+  fromRecipeOutput DTop = pure . DiamondResult
+
+type instance AuxInput 'TestKind = Int
+instance Applicative m => SupplyAuxInput DiamondTag m where
+  supplyAuxInput DBot = pure 42
+  supplyAuxInput DLeft = pure 42
+  supplyAuxInput DRight = pure 42
+  supplyAuxInput DTop = pure 42
 
 data DiamondTestEnv
   = DiamondTestEnv
@@ -82,30 +99,32 @@ data DiamondTestEnv
   , counterBot :: IORef Int
   }
 
-buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag Result (RecipeOutput x)
+buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
 buildExample env = build onFailure (`DM.lookup` rules) where
-  rules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
+  rules :: DMap DiamondTag (RecipeGrub _ DiamondTag DiamondResult)
   rules = DM.fromList
     [ DBot   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterBot env) (+ 1)
         return ()
     , DLeft  :=> recipe do
         liftOptionalIO $ modifyIORef' (counterLeft env) (+ 1)
-        ~(SomeResult _) <- resolve DBot
+        ~(DiamondResult _) <- resolve DBot
         return ()
     , DRight :=> recipe do
         liftOptionalIO $ modifyIORef' (counterRight env) (+ 1)
-        ~(SomeResult _) <- resolve DLeft
-        ~(SomeResult _) <- resolve DBot
+        ~(DiamondResult _) <- resolve DLeft
+        ~(DiamondResult _) <- resolve DBot
         return ()
     , DTop   :=> recipe do
         liftOptionalIO $ modifyIORef' (counterTop env) (+ 1)
-        ~(SomeResult _) <- resolve DRight
-        ~(SomeResult _) <- resolve DLeft
+        ~(DiamondResult _) <- resolve DRight
+        ~(DiamondResult _) <- resolve DLeft
+        aux <- getAuxInput
+        liftOptionalIO $ aux @?= 42
         return ()
     ]
 
-onFailure :: FailureReason k x -> GrubberM DiamondTag Result y
+onFailure :: FailureReason k x -> GrubberM DiamondTag DiamondResult y
 onFailure _ = liftBase $ assertFailure "shouldn't fail to run"
 
 globalPutStrLock :: MVar ()
@@ -115,9 +134,9 @@ globalPutStrLock = unsafePerformIO $ newMVar ()
 atomicPutStrLn :: String -> IO ()
 atomicPutStrLn str = withMVar globalPutStrLock $ \_ -> putStrLn str
 
-_delayedExample :: DiamondTag x -> GrubberM DiamondTag Result (RecipeOutput x)
+_delayedExample :: DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
 _delayedExample = build onFailure (`DM.lookup` delayedRules) where
-  delayedRules :: DMap DiamondTag (Recipe MonadRecipeGrub DiamondTag Result)
+  delayedRules :: DMap DiamondTag (RecipeGrub _ DiamondTag DiamondResult)
   delayedRules = DM.fromList
     [ DBot    :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start bot" >> threadDelay 2000000 >> atomicPutStrLn "end bot"
@@ -127,15 +146,15 @@ _delayedExample = build onFailure (`DM.lookup` delayedRules) where
         return ()
     , DRight  :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start right"
-        ~(SomeResult b) <- resolve DBot
-        ~(SomeResult l) <- resolve DLeft
+        ~(DiamondResult b) <- resolve DBot
+        ~(DiamondResult l) <- resolve DLeft
         b `seq` l `seq` liftOptionalIO $ threadDelay 2000000 >> atomicPutStrLn "end right"
         return ()
     , DTop   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start top"
-        ~(SomeResult b) <- resolve DBot
-        ~(SomeResult l) <- b `seq` resolve DLeft
-        ~(SomeResult r) <- l `seq` resolve DRight
+        ~(DiamondResult b) <- resolve DBot
+        ~(DiamondResult l) <- b `seq` resolve DLeft
+        ~(DiamondResult r) <- l `seq` resolve DRight
         --withReadFile _ $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
         r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
         return ()
