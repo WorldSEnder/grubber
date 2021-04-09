@@ -229,10 +229,11 @@ class ( MonadRestrictedIO m
 type MonadRecipeGrub :: forall k. ((* -> *) -> Constraint, (* -> *) -> k -> Constraint)
 type MonadRecipeGrub = ('(,) HasInternalOperations GrubberPublicInterface)
 
--- TODO: investigate whether we can make the "forall kk" implicit and still apply it to
--- MonadRecipeGrub
-type RecipeGrub :: forall k2. forall kk -> (k2 -> *) -> (k2 -> *) -> kk -> *
-type RecipeGrub kk = Recipe (MonadRecipeGrub @kk)
+-- a trick I learned from https://www.reddit.com/r/haskell/comments/mkh6iz/
+-- explicitly annotating the right side implicitly quantifies over the kind variables mentioned there
+-- and thus allows to use kk in the explicit annotation of MonadRecipeGrub
+type RecipeGrub :: forall kk k2. (k2 -> *) -> (k2 -> *) -> kk -> *
+type RecipeGrub = Recipe (MonadRecipeGrub @kk) :: (k2 -> *) -> (k2 -> *) -> kk -> *
 type RecipeBookGrub :: forall k. (k -> *) -> (k -> *) -> *
 type RecipeBookGrub (k :: kk -> *) v = RecipeBook (MonadRecipeGrub @kk) k v
 
