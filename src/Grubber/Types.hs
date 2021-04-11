@@ -28,6 +28,7 @@ module Grubber.Types
 , Build
 , BuildX
 , MonadRestrictedIO(..)
+, MonadRestrictedIOViaTrans(..)
 , AuxInput
 , AccessAuxInput(..)
 ) where

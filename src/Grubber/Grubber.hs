@@ -28,7 +28,7 @@ import Control.Monad.Trans.Control
 import Control.Monad.Reader.Class
 import Control.Monad.Trans.Reader (ReaderT(..))
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Class (MonadTrans, lift)
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad.Catch
@@ -38,7 +38,6 @@ import Data.Functor.Const
 import Data.GADT.Compare
 import Data.Dependent.Map as DM hiding ((\\))
 import Data.Constraint
-import Data.Reflection
 import Data.Proxy
 
 import Grubber.Types
@@ -141,6 +140,11 @@ newtype RecipeEnvT x f k v m r = RecipeEnvT
 deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
 deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v m)
 
+instance MonadTrans (RecipeEnvT x f k v) where
+  lift = RecipeEnvT . lift . lift . lift
+
+deriving instance Monad m => MonadContext (k x) (RecipeEnvT x f k v m)
+
 instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
   type FileReadToken (RecipeEnvT x f k v m) = GrubberReadToken
   withReadFile (GrubberReadToken fp) = withReadFileB fp \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
@@ -155,7 +159,7 @@ instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) w
   internalDict _ = Dict
 
 instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) x where
-  getAuxInput = RecipeEnvT $ ReaderT $ \trgt -> lift $ lift $ supplyAuxInput trgt
+  getAuxInput = fromContext (lift . supplyAuxInput)
 
 instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x

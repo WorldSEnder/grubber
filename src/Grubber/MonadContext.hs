@@ -3,8 +3,11 @@
 -- in the instance for MonadContext ctx (CtxReflT s m)
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DerivingVia #-}
 module Grubber.MonadContext
 ( MonadContext(..)
+, ContextFromReader(..)
 , CtxReflT(..)
 , runCtxReflT
 , mapCtxReflT
@@ -13,22 +16,55 @@ module Grubber.MonadContext
 , MonadIOFromCtx(..)
 ) where
 
+import Control.Monad
+import Control.Monad.Base
 import Control.Monad.IO.Class
+import Control.Monad.Reader
+import Control.Monad.Zip
+import Control.Applicative
+import Control.Monad.Trans.Control
 
+import Data.Coerce
 import Data.Reflection
 import Data.Proxy
 
+import Grubber.Types
+
 -- | Like MonadReader, but without the inherent `local` operation
-class Monad m => MonadContext ctx m | m -> ctx where 
+class Monad m => MonadContext ctx m | m -> ctx where
+  -- | There are some additional laws one should follow:
+  -- ```
+  -- capture >> capture = capture
+  -- captures = <$> capture
+  -- fromContext = (capture >>=)
+  -- ```
+  -- Further, capture should commute with *every* other monadic operation.
   capture :: m ctx
   captures :: (ctx -> a) -> m a
-  captures f = f <$> capture
+  captures = (<$> capture)
   fromContext :: (ctx -> m a) -> m a
   fromContext = (capture >>=)
 
 -- | Reflect
 newtype CtxReflT s m a = CtxReflT { unCtxReflT :: m a }
-  deriving (Functor, Applicative, Monad, MonadIO)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadFix, MonadZip, Alternative, MonadPlus)
+
+deriving instance MonadBase b m => MonadBase b (CtxReflT s m)
+deriving instance MonadBaseControl b m => MonadBaseControl b (CtxReflT s m)
+
+instance MonadTrans (CtxReflT s) where
+  lift = coerce
+  {-# INLINE lift #-}
+
+instance MonadTransControl (CtxReflT s) where
+  type StT (CtxReflT s) a = a
+  liftWith f = coerce $ f coerce
+  {-# INLINE liftWith #-}
+  restoreT = coerce
+  {-# INLINE restoreT #-}
+
+deriving via (MonadRestrictedIOViaTrans (CtxReflT s) m)
+  instance MonadRestrictedIO m => MonadRestrictedIO (CtxReflT r m)
 
 instance (Monad m, Reifies s ctx) => MonadContext ctx (CtxReflT s m) where
   capture = fromContext pure
@@ -63,3 +99,15 @@ newtype MonadIOFromCtx m a = MonadIOFromCtx { runMonadIOFromCtx :: m a }
 
 instance (MonadContext ctx m, HasMonadIOOps ctx m) => MonadIO (MonadIOFromCtx m) where
   liftIO io = MonadIOFromCtx $ fromContext $ \ctx -> opsLiftIO (monadIOOps ctx) io
+
+newtype ContextFromReader m a = ContextFromReader { runR2Ctx :: m a }
+  deriving (Functor, Applicative, Monad)
+
+instance MonadReader r m => MonadContext r (ContextFromReader m) where
+  capture = ContextFromReader ask
+  {-# INLINE capture #-}
+  captures = ContextFromReader . reader
+  {-# INLINE captures #-}
+
+deriving via (ContextFromReader (ReaderT r m))
+  instance Monad m => MonadContext r (ReaderT r m)
