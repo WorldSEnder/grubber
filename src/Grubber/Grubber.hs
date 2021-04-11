@@ -28,10 +28,10 @@ import Control.Monad.Trans.Control
 import Control.Monad.Reader.Class
 import Control.Monad.Trans.Reader (ReaderT(..))
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Class (MonadTrans, lift)
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad.Catch
+import Control.Monad.Except
 
 import Data.Functor.Compose
 import Data.Functor.Const
@@ -165,6 +165,8 @@ instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) 
 
 instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x
+instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
+  => GrubberInterface (RecipeEnvT x f k v m) x
 
 scheduleCatchErrors :: MonadCatch m
                     => Scheduler (RecipeEnvT x (FailureReason k) k v m) e k v x
@@ -182,12 +184,12 @@ scheduleReadInputs scheduleInner resolveDep target reci = runReaderT (runRecipeT
   where
     inner = scheduleInner (RecipeEnvT . ReaderT . const . resolveDep) target reci
 
-type CoopRecipeT x f m = ResourceT (ExceptT (f x) m)
+type CoopRecipeT e m = ResourceT (ExceptT e m)
 
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
               => Scheduler (UnwrappedRecipeT x f k v m) e k v x
-              -> Scheduler (CoopRecipeT x f m) e k v x
+              -> Scheduler (CoopRecipeT (f x) m) e k v x
 scheduleAsync scheduleInner resolveDep target reci = controlT $ \runResT ->
   loopBlockingT unblockAsyncList (scheduleInner (liftedResolve runResT) target reci)
   where
@@ -207,7 +209,7 @@ scheduleAsync scheduleInner resolveDep target reci = controlT $ \runResT ->
     unblockAsyncList :: MonadBase IO m => TaskList (AsyncResult (f x) v m) b -> ExceptT (f x) m b
     unblockAsyncList = elimTaskListA waitResultSTM
 
-type SchedulerM k v m x = ReaderT (TransactionState k v) (CoopRecipeT x (FailureReason k) m)
+type SchedulerM k v m x = ReaderT (TransactionState k v) (CoopRecipeT (FailureReason k x) m)
 
 scheduleCoop :: (MonadBase IO m, GCompare k)
              => Scheduler (SchedulerM k v m x) e k v x
@@ -225,14 +227,19 @@ scheduleCoop scheduleInner resolveDep target reci = do
     writeTVar targetInfo newBuildInfo
     return promise
   case strat of
-    Left (Built res)        -> lift $ lift $ ExceptT $ return res
-    Left (InFlight promise) -> lift $ lift $ ExceptT $ liftBase . atomically $ readTMVar promise
-    Right promise           -> controlT $ \runRes -> controlT $ \runTs -> ExceptT $ do
-      val <- runExceptT $ runTs $ runRes $ scheduleInner resolveDep target reci
-      liftBase . atomically $ putTMVar promise val
-      return val
+    Left (Built res)        -> liftEither res
+    Left (InFlight promise) -> liftBase (atomically $ readTMVar promise) >>= liftEither
+    Right promise           -> do
+        val <- scheduleInner resolveDep target reci
+        liftBase . atomically $ putTMVar promise $ Right val
+        return val
+      `catchError` \e -> do
+        liftBase . atomically $ putTMVar promise $ Left e
+        throwError e
 
 newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
+  deriving (Functor, Applicative, Monad)
+deriving instance Monad m => MonadError (FailureReason k x) (BuildT k v m x)
 
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
 scheduleBuild = coerceScheduler
@@ -244,8 +251,13 @@ class ( MonadRestrictedIO m
       , AccessAuxInput m x
       ) => GrubberPublicInterface m x
 
-type MonadRecipeGrub :: forall k. ((* -> *) -> Constraint, (* -> *) -> k -> Constraint)
-type MonadRecipeGrub = ('(,) HasInternalOperations GrubberPublicInterface)
+type GrubberInterface :: forall k. (* -> *) -> k -> Constraint
+class ( HasInternalOperations m
+      , GrubberPublicInterface m x
+      ) => GrubberInterface m x
+
+type MonadRecipeGrub :: forall k. (* -> *) -> k -> Constraint
+type MonadRecipeGrub = GrubberInterface
 
 -- a trick I learned from https://www.reddit.com/r/haskell/comments/mkh6iz/
 -- explicitly annotating the right side implicitly quantifies over the kind variables mentioned there
@@ -286,9 +298,9 @@ build onFailure recipes globalGoal = do
 
     catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
     catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runRes -> controlT $ \runTs ->
-      catchE (runTs (runRes inner) >>= lift . fromRecipeOutput k) (throwE . DepFailed k)
+      (runTs (runRes inner) >>= lift . fromRecipeOutput k) `catchE` (throwError . DepFailed k)
 
-    mkTarget = runSchedulerX (BuildT . lift . lift . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
+    mkTarget = runSchedulerX (throwError . NoRecipeFound) catchErrorInDep grubberScheduler recipes
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
