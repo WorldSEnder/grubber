@@ -45,6 +45,7 @@ import Grubber.Types
 import Grubber.Blocking
 import Grubber.Filesystem
 import Grubber.Internal
+import Grubber.MonadContext
 
 data GrubberConfig = GrubberConfig
   { grubberRunLifecycle :: !Bool
@@ -127,7 +128,14 @@ data TransactionState k v
 data AsyncResult f v m r = forall x. r ~ v x => AsyncResult (Async (StM (ExceptT f m) (v x)))
 
 -- the monad to use to actually *run* a recipe in.
-newtype RecipeEnvT x f k v m r = RecipeEnvT { runRecipeT :: ReaderT (k x) (BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)) r }
+newtype RecipeEnvT x f k v m r = RecipeEnvT
+  { runRecipeT ::
+      ReaderT (k x) (
+        BlockingListT (AsyncResult (f x) v m) (
+          ExceptT (f x) m
+        )
+      ) r
+  }
   deriving (Functor, Applicative, Monad, MonadRestrictedIO)
 
 deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
@@ -149,16 +157,23 @@ instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) w
 instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) x where
   getAuxInput = RecipeEnvT $ ReaderT $ \trgt -> lift $ lift $ supplyAuxInput trgt
 
-instance
-  ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m)
+instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x
 
 type UnwrappedRecipeT x f k v m = BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)
 
+scheduleCatchErrors :: MonadCatch m
+                    => Scheduler (RecipeEnvT x (FailureReason k) k v m) e k v x
+                    -> Scheduler (RecipeEnvT x (FailureReason k) k v m) e k v x
+scheduleCatchErrors scheduleInner resolv target reci = RecipeEnvT $
+  catch (runRecipeT $ scheduleInner resolv target reci) $ \e ->
+    -- reevaluate if catching *all* exceptions is really the way to go
+    lift $ lift $ throwE $ RuntimeError e
+
 scheduleReadInputs :: Scheduler (RecipeEnvT x f k v m) e k v x
                    -> Scheduler (UnwrappedRecipeT x f k v m) e k v x
 scheduleReadInputs scheduleInner resolveDep target reci =
-  runReaderT (runRecipeT $ scheduleInner (\k -> RecipeEnvT $ ReaderT $ \_ -> resolveDep k) target reci) target
+  runReaderT (runRecipeT $ scheduleInner (\k -> RecipeEnvT $ ReaderT $ \_ {- == target -} -> resolveDep k) target reci) target
 
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
@@ -183,13 +198,7 @@ scheduleAsync scheduleInner resolveDep target reci =
     unblockAsyncList :: MonadBase IO m => TaskList (AsyncResult (f x) v m) b -> ExceptT (f x) m b
     unblockAsyncList = elimTaskListA waitResultSTM
 
-schedulerExceptReader :: Monad m
-                      => Scheduler (ExceptT f m) e k v x
-                      -> Scheduler (ExceptT f (ReaderT r m)) e k v x
-schedulerExceptReader scheduleInner resolver target reci = ExceptT $ liftWith $ \runner ->
-  runExceptT $ scheduleInner (mapExceptT runner . resolver) target reci
-
-type SchedulerM k v m x = ExceptT (FailureReason k x) (ReaderT (TransactionState k v) m)
+type SchedulerM k v m x = ReaderT (TransactionState k v) (ExceptT (FailureReason k x) m)
 
 scheduleCoop :: (MonadBase IO m, GCompare k)
              => Scheduler (SchedulerM k v m x) e k v x
@@ -207,17 +216,17 @@ scheduleCoop scheduleInner resolveDep target reci = do
     writeTVar targetInfo newBuildInfo
     return promise
   case strat of
-    Left (Built res)        -> ExceptT $ return res
-    Left (InFlight promise) -> ExceptT $ liftBase . atomically $ readTMVar promise
-    Right promise           -> ExceptT $ do
-      val <- runExceptT $ scheduleInner resolveDep target reci
+    Left (Built res)        -> lift $ ExceptT $ return res
+    Left (InFlight promise) -> lift $ ExceptT $ liftBase . atomically $ readTMVar promise
+    Right promise           -> controlT $ \runTs -> ExceptT $ do
+      val <- runExceptT $ runTs (scheduleInner resolveDep target reci)
       liftBase . atomically $ putTMVar promise val
       return val
 
 newtype BuildT k v m x r = BuildT { runBuildT :: SchedulerM k v m x r }
 
 scheduleBuild :: Scheduler (SchedulerM k v m x) e k v y -> Scheduler (BuildT k v m x) e k v y
-scheduleBuild scheduleInner resolveDeps target reci = BuildT $ scheduleInner (runBuildT . resolveDeps) target reci
+scheduleBuild = coerceScheduler
 
 type GrubberPublicInterface :: forall k. (* -> *) -> k -> Constraint
 class ( MonadRestrictedIO m
@@ -240,6 +249,12 @@ type RecipeBookGrub (k :: kk -> *) v = RecipeBook (MonadRecipeGrub @kk) k v
 class SupplyAuxInput k m where
   supplyAuxInput :: k x -> m (AuxInput x)
 
+-- | Class of values that can be produced from recipe outputs.
+-- For example, even though recipes for files don't return the written file content,
+-- depending on them will return a FileReadToken.
+class DependencyOuput k v m where
+  fromRecipeOutput :: k x -> RecipeOutput x -> m (v x)
+
 build :: forall e kk (k :: kk -> *) v m.
       ( MonadRestrictedIO m
       , MonadBaseControl IO m
@@ -247,29 +262,24 @@ build :: forall e kk (k :: kk -> *) v m.
       , MonadReader e m
       , HasBuildCache k v e
       , GCompare k
-      , DependencyOuput k v m
-      , SupplyAuxInput k m)
+      , SupplyAuxInput k m
+      , DependencyOuput k v m )
       => (forall x. FailureReason k x -> m (RecipeOutput x))
       -> Build m (MonadRecipeGrub @kk) k v
 build onFailure recipes globalGoal = do
   m <- liftBase $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
-  res <- runReaderT (runExceptT $ runBuildT $ mkTarget globalGoal) $ TransactionState m c
+  res <- runExceptT $ runReaderT (runBuildT $ mkTarget globalGoal) $ TransactionState m c
   finalize res
   where
     grubberScheduler :: forall y. Scheduler (BuildT k v m y) (MonadRecipeGrub @kk) k v y
-    grubberScheduler = scheduleBuild $ scheduleCoop $ schedulerExceptReader $ scheduleAsync $ scheduleReadInputs scheduleResolver
+    grubberScheduler = scheduleBuild $ scheduleCoop $ scheduleReader $ scheduleAsync $ scheduleReadInputs $ scheduleCatchErrors scheduleResolver
 
     catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
-    catchErrorInDep k err = BuildT $ catchE (runBuildT err >>= lift . lift . fromRecipeOutput k) (throwE . DepFailed k)
+    catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runTs ->
+      catchE (runTs inner >>= lift . fromRecipeOutput k) (throwE . DepFailed k)
 
-    mkTarget = runSchedulerX (BuildT . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
+    mkTarget = runSchedulerX (BuildT . lift . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok
-
--- | Class of values that can be produced from recipe outputs.
--- For example, even though recipes for files don't return the written file content,
--- depending on them will return a FileReadToken.
-class DependencyOuput k v m where
-  fromRecipeOutput :: k x -> RecipeOutput x -> m (v x)

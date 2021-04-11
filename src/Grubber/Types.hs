@@ -20,6 +20,9 @@ module Grubber.Types
 , runResolver
 , RecipeBook
 , Scheduler
+, mapScheduler
+, coerceScheduler
+, scheduleReader
 , runScheduler
 , runSchedulerX
 , Build
@@ -37,7 +40,9 @@ import Control.Monad.Base
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
 
+import Data.Coerce
 import Data.Kind
+
 import Grubber.Blocking
 
 -- | Like MonadIO but less powerful. Only allows lifting of actions which result in unit.
@@ -123,6 +128,17 @@ runResolver r task = runReaderT (runResolver_ task) (Resolver r)
 type Scheduler m e k v x = (forall y. k y -> m (v y))
                          -> k x -> Recipe e k v x -> m (RecipeOutput x)
 
+-- TODO: implement equivalent to 'control' from 'MonadBaseControl'?
+mapScheduler :: (forall r. m r -> n r) -> (forall r. n r -> m r)
+             -> Scheduler m e k v x -> Scheduler n e k v x
+mapScheduler forw backw inner resol target reci = forw $ inner (backw . resol) target reci
+
+coerceScheduler :: (Coercible m n) => Scheduler m e k v x -> Scheduler n e k v x
+coerceScheduler = mapScheduler coerce coerce
+
+scheduleReader :: Monad m => Scheduler m e k v x -> Scheduler (ReaderT r m) e k v x
+scheduleReader scheduleInner resolv target reci = liftWith $ \run -> scheduleInner (run . resolv) target reci
+
 scheduleResolver :: (BuildEnv e m x)
                  => Scheduler m e k v x
 scheduleResolver deps _ reci = runResolver deps $ runRecipe reci
@@ -144,9 +160,9 @@ runScheduler onNoRecipe augmentResult schedule recipes = go
     resolv :: forall y. k y -> m (v y)
     resolv k = augmentResult k $ go k
     go :: forall y. k y -> m (RecipeOutput y)
-    go k  = case recipes k of
-              Nothing -> onNoRecipe k
-              Just reci -> schedule resolv k reci
+    go k = case recipes k of
+      Nothing -> onNoRecipe k
+      Just reci -> schedule resolv k reci
 
 runSchedulerX :: forall m e k v. ()
               => (forall x. k x -> m x (RecipeOutput x))
@@ -155,12 +171,14 @@ runSchedulerX :: forall m e k v. ()
               -> BuildX m e k v
 runSchedulerX onNoRecipe augmentDepResult schedule recipes = go
   where
+    resolv :: forall x y. k y -> m x (v y)
+    resolv k = augmentDepResult k $ go k
     go :: forall y. k y -> m y (RecipeOutput y)
-    go k  = case recipes k of
-              Nothing -> onNoRecipe k
-              Just reci -> schedule (\l -> augmentDepResult l $ go l) k reci
+    go k = case recipes k of
+      Nothing -> onNoRecipe k
+      Just reci -> schedule resolv k reci
 
-type family AuxInput (e :: k) :: *
+type family AuxInput (e :: k) :: Type
 
 class AccessAuxInput m x | m -> x where
   getAuxInput :: m (AuxInput x)

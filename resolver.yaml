@@ -8,6 +8,10 @@ packages:
 - git: https://github.com/WorldSEnder/async-pool.git
   commit: cd2495701f1eb19350c06ec6bb032bec13a6b1e9
 
+# monad-control with controlT
+- git: https://github.com/basvandijk/monad-control.git
+  commit: 8ce0a1b9948487268e561efb157367870fecd1f1
+
 ### GHC Vis for visual debugging
 - git: https://github.com/def-/ghc-vis.git
   commit: 3c56a62c9ccad3acc6c97c5f9acbbba92464a0f7

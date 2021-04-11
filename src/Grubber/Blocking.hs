@@ -23,6 +23,7 @@ import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
 import Control.Monad.Base
+import Control.Monad.Catch as MC
 
 class Functor f => Semigroupal f where
   (<<>>) :: f a -> f b -> f (a, b)
@@ -95,13 +96,30 @@ instance (Semigroupal w) => MonadTrans (BlockingT w) where
 instance (MonadBase b m, Semigroupal w) => MonadBase b (BlockingT w m) where
   liftBase = lift . liftBase
 
+type RunBlocking w = forall n b. Monad n => BlockingT w n b -> n (Either b (Blocker w n b))
+
+liftBlockingWith :: (Semigroupal w, Monad m)
+                 => (RunBlocking w -> m a) -> BlockingT w m a
+liftBlockingWith f = lift $ f runBlockingT
+
+-- compare to 'Control.Monad.Trans.Control.restoreT'
+restoreBlockingT :: (Semigroupal w, Monad m) => Either a (Blocker w m a) -> BlockingT w m a
+restoreBlockingT (Left res) = Pure res
+restoreBlockingT (Right (Blocker blocker cont)) = BlockedOn blocker cont
+
+controlBlockingT :: (Semigroupal w, Monad m)
+                 => (RunBlocking w -> m (Either a (Blocker w m a))) -> BlockingT w m a
+controlBlockingT f = liftBlockingWith f >>= restoreBlockingT
 instance (MonadBaseControl b m, Semigroupal w) => MonadBaseControl b (BlockingT w m) where
   type StM (BlockingT w m) a = StM m (Either a (Blocker w m a))
-  -- TODO: check this for correctness (and efficiency)
   liftBaseWith f = lift $ liftBaseWith $ \runner -> f (runner . runBlockingT)
-  restoreM s = lift (restoreM s) >>= \case
-    Left a -> return a
-    Right (Blocker p c) -> BlockedOn p c
+  restoreM s = lift (restoreM s) >>= restoreBlockingT
+
+instance (MonadThrow m, Semigroupal w) => MonadThrow (BlockingT w m) where
+  throwM = lift . throwM
+
+instance (MonadCatch m, Semigroupal w) => MonadCatch (BlockingT w m) where
+  catch act hdlr = controlBlockingT $ \run -> MC.catch (run act) (run . hdlr)
 
 data TaskList f x where
   Single :: f a -> (a -> x) -> TaskList f x

@@ -28,6 +28,7 @@ library
       Grubber.Filesystem
       Grubber.Grubber
       Grubber.Internal
+      Grubber.MonadContext
       Grubber.Types
   other-modules:
       Paths_grubber
