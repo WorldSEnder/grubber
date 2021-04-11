@@ -176,8 +176,9 @@ scheduleCatchErrors scheduleInner resolv target reci = RecipeEnvT $
 
 scheduleReadInputs :: Scheduler (RecipeEnvT x f k v m) e k v x
                    -> Scheduler (UnwrappedRecipeT x f k v m) e k v x
-scheduleReadInputs scheduleInner resolveDep target reci =
-  runReaderT (runRecipeT $ scheduleInner (\k -> RecipeEnvT $ ReaderT $ \_ {- == target -} -> resolveDep k) target reci) target
+scheduleReadInputs scheduleInner resolveDep target reci = runReaderT (runRecipeT inner) target
+  where
+    inner = scheduleInner (RecipeEnvT . ReaderT . const . resolveDep) target reci
 
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
@@ -188,7 +189,7 @@ scheduleAsync scheduleInner resolveDep target reci =
   where
     liftedResolve :: forall y. k y -> UnwrappedRecipeT x f k v m (v y)
     liftedResolve key = do
-      as <- lift .  lift $ liftBaseWith $ \unlift -> async (unlift $ runExceptT $ resolveDep key)
+      as <- lift $ liftBaseWith $ \unlift -> async (unlift $ resolveDep key)
       block (AsyncResult as :: AsyncResult (f x) v m (v y))
     waitResultSTM :: forall y. AsyncResult (f x) v m y -> ExceptT (f x) m y
     waitResultSTM (AsyncResult br) = do
