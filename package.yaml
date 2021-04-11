@@ -32,6 +32,8 @@ dependencies:
 - transformers-base
 - monad-control
 - constraints
+- resourcet
+- unliftio-core
 
 ghc-options:
 - -Wall

@@ -45,6 +45,8 @@ import Grubber.Blocking
 import Grubber.Filesystem
 import Grubber.Internal
 import Grubber.MonadContext
+import Grubber.OrphanInstances ()
+import Grubber.ResourceT
 
 data GrubberConfig = GrubberConfig
   { grubberRunLifecycle :: !Bool
@@ -164,8 +166,6 @@ instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) 
 instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x
 
-type UnwrappedRecipeT x f k v m = BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)
-
 scheduleCatchErrors :: MonadCatch m
                     => Scheduler (RecipeEnvT x (FailureReason k) k v m) e k v x
                     -> Scheduler (RecipeEnvT x (FailureReason k) k v m) e k v x
@@ -174,22 +174,28 @@ scheduleCatchErrors scheduleInner resolv target reci = RecipeEnvT $
     -- reevaluate if catching *all* exceptions is really the way to go
     lift $ lift $ throwE $ RuntimeError e
 
+type UnwrappedRecipeT x f k v m = BlockingListT (AsyncResult (f x) v m) (ExceptT (f x) m)
+
 scheduleReadInputs :: Scheduler (RecipeEnvT x f k v m) e k v x
                    -> Scheduler (UnwrappedRecipeT x f k v m) e k v x
 scheduleReadInputs scheduleInner resolveDep target reci = runReaderT (runRecipeT inner) target
   where
     inner = scheduleInner (RecipeEnvT . ReaderT . const . resolveDep) target reci
 
+type CoopRecipeT x f m = ResourceT (ExceptT (f x) m)
+
 scheduleAsync :: forall e f k v m x.
                  (MonadRestrictedIO m, MonadBaseControl IO m, MonadCatch m)
               => Scheduler (UnwrappedRecipeT x f k v m) e k v x
-              -> Scheduler (ExceptT (f x) m) e k v x
-scheduleAsync scheduleInner resolveDep target reci =
-  loopBlockingT unblockAsyncList (scheduleInner liftedResolve target reci)
+              -> Scheduler (CoopRecipeT x f m) e k v x
+scheduleAsync scheduleInner resolveDep target reci = controlT $ \runResT ->
+  loopBlockingT unblockAsyncList (scheduleInner (liftedResolve runResT) target reci)
   where
-    liftedResolve :: forall y. k y -> UnwrappedRecipeT x f k v m (v y)
-    liftedResolve key = do
-      as <- lift $ liftBaseWith $ \unlift -> async (unlift $ resolveDep key)
+    liftedResolve :: forall y. Run ResourceT -> k y -> UnwrappedRecipeT x f k v m (v y)
+    liftedResolve runResT key = do
+      (_, as) <- lift $ liftBaseWith $ \runBase -> do
+        let alloc = async (runBase . runResT $ resolveDep key)
+        runResT $ allocate alloc uninterruptibleCancel
       block (AsyncResult as :: AsyncResult (f x) v m (v y))
     waitResultSTM :: forall y. AsyncResult (f x) v m y -> ExceptT (f x) m y
     waitResultSTM (AsyncResult br) = do
@@ -198,12 +204,10 @@ scheduleAsync scheduleInner resolveDep target reci =
       case res2 of
         Left failed -> throwE failed
         Right ok -> return ok
-    -- TODO: shortcurcuit on failed dependency and cancel remaining active tasks.
-    -- NOTE: canceling might be wrong, when other tasks are waiting on the same dependency.
     unblockAsyncList :: MonadBase IO m => TaskList (AsyncResult (f x) v m) b -> ExceptT (f x) m b
     unblockAsyncList = elimTaskListA waitResultSTM
 
-type SchedulerM k v m x = ReaderT (TransactionState k v) (ExceptT (FailureReason k x) m)
+type SchedulerM k v m x = ReaderT (TransactionState k v) (CoopRecipeT x (FailureReason k) m)
 
 scheduleCoop :: (MonadBase IO m, GCompare k)
              => Scheduler (SchedulerM k v m x) e k v x
@@ -221,10 +225,10 @@ scheduleCoop scheduleInner resolveDep target reci = do
     writeTVar targetInfo newBuildInfo
     return promise
   case strat of
-    Left (Built res)        -> lift $ ExceptT $ return res
-    Left (InFlight promise) -> lift $ ExceptT $ liftBase . atomically $ readTMVar promise
-    Right promise           -> controlT $ \runTs -> ExceptT $ do
-      val <- runExceptT $ runTs (scheduleInner resolveDep target reci)
+    Left (Built res)        -> lift $ lift $ ExceptT $ return res
+    Left (InFlight promise) -> lift $ lift $ ExceptT $ liftBase . atomically $ readTMVar promise
+    Right promise           -> controlT $ \runRes -> controlT $ \runTs -> ExceptT $ do
+      val <- runExceptT $ runTs $ runRes $ scheduleInner resolveDep target reci
       liftBase . atomically $ putTMVar promise val
       return val
 
@@ -274,17 +278,17 @@ build :: forall e kk (k :: kk -> *) v m.
 build onFailure recipes globalGoal = do
   m <- liftBase $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
-  res <- runExceptT $ runReaderT (runBuildT $ mkTarget globalGoal) $ TransactionState m c
+  res <- runExceptT $ runResourceT $ runReaderT (runBuildT $ mkTarget globalGoal) $ TransactionState m c
   finalize res
   where
     grubberScheduler :: forall y. Scheduler (BuildT k v m y) (MonadRecipeGrub @kk) k v y
     grubberScheduler = scheduleBuild $ scheduleCoop $ scheduleReader $ scheduleAsync $ scheduleReadInputs $ scheduleCatchErrors scheduleResolver
 
     catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
-    catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runTs ->
-      catchE (runTs inner >>= lift . fromRecipeOutput k) (throwE . DepFailed k)
+    catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runRes -> controlT $ \runTs ->
+      catchE (runTs (runRes inner) >>= lift . fromRecipeOutput k) (throwE . DepFailed k)
 
-    mkTarget = runSchedulerX (BuildT . lift . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
+    mkTarget = runSchedulerX (BuildT . lift . lift . throwE . NoRecipeFound) catchErrorInDep grubberScheduler recipes
 
     finalize (Left e) = onFailure e
     finalize (Right ok) = pure ok

@@ -110,6 +110,7 @@ restoreBlockingT (Right (Blocker blocker cont)) = BlockedOn blocker cont
 controlBlockingT :: (Semigroupal w, Monad m)
                  => (RunBlocking w -> m (Either a (Blocker w m a))) -> BlockingT w m a
 controlBlockingT f = liftBlockingWith f >>= restoreBlockingT
+
 instance (MonadBaseControl b m, Semigroupal w) => MonadBaseControl b (BlockingT w m) where
   type StM (BlockingT w m) a = StM m (Either a (Blocker w m a))
   liftBaseWith f = lift $ liftBaseWith $ \runner -> f (runner . runBlockingT)

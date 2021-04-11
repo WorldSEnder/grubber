@@ -29,6 +29,8 @@ library
       Grubber.Grubber
       Grubber.Internal
       Grubber.MonadContext
+      Grubber.OrphanInstances
+      Grubber.ResourceT
       Grubber.Types
   other-modules:
       Paths_grubber
@@ -57,9 +59,11 @@ library
     , monad-control
     , mtl
     , reflection
+    , resourcet
     , stm
     , transformers
     , transformers-base
+    , unliftio-core
   default-language: Haskell2010
 
 test-suite grubber-tests
@@ -94,9 +98,11 @@ test-suite grubber-tests
     , monad-control
     , mtl
     , reflection
+    , resourcet
     , stm
     , tasty >=1.2
     , tasty-hunit
     , transformers
     , transformers-base
+    , unliftio-core
   default-language: Haskell2010
