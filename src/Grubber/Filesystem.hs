@@ -70,6 +70,7 @@ class FileWriting m where
   -- Anyway, the only way to access a token should thus be to get one externally.
   type FileWriteToken m
   withWriteFile :: FileWriteToken m -> (Handle -> m r) -> m r
+  fwPutStr :: Handle -> String -> m ()
   toReadToken :: FileWriteToken m -> m (FileReadToken m)
 
 class (FileWriting m, MonadReadAux (FileWriteToken m) m) => FileWritingAux m

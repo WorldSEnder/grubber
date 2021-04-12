@@ -121,7 +121,7 @@ deriving instance MonadBaseControl b m => MonadBaseControl b (WithResolverT k v 
 instance DependencyResolver k v (WithResolverT k v m) where
   resolve key = WithResolver $ ReaderT $ \(Resolver r) -> r key
 
-instance AccessAuxInput m x => AccessAuxInput (WithResolverT k v m) x where
+instance AccessAuxInput m aux => AccessAuxInput (WithResolverT k v m) aux where
   getAuxInput = WithResolver $ ReaderT $ const getAuxInput
 
 runResolver :: (forall x. k x -> m (v x)) -> WithResolverT k v m a -> m a
@@ -181,7 +181,7 @@ runSchedulerX onNoRecipe augmentDepResult schedule recipes cont = cont go
       Nothing -> onNoRecipe k
       Just reci -> schedule resolv k reci
 
-type family AuxInput (e :: k) :: Type
+type family AuxInput (e :: k) (m :: Type -> Type) :: Type
 
-class AccessAuxInput m x | m -> x where
-  getAuxInput :: m (AuxInput x)
+class AccessAuxInput m aux | m -> aux where
+  getAuxInput :: m aux

@@ -41,6 +41,8 @@ import Data.Dependent.Map as DM hiding ((\\))
 import Data.Constraint
 import Data.Proxy
 
+import System.IO
+
 import Grubber.Types
 import Grubber.Blocking
 import Grubber.Filesystem
@@ -155,14 +157,21 @@ instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
 instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
   type FileWriteToken (RecipeEnvT x f k v m) = FilePath
   withWriteFile = withWriteFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))
+  fwPutStr hdl str = liftBase $ hPutStr hdl str
   toReadToken = return . GrubberReadToken
 
 instance MonadBaseControl IO m => InternalOperations (RecipeEnvT x f k v m)
 instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) where
   internalDict _ = Dict
 
-instance (Monad m, SupplyAuxInput k m) => AccessAuxInput (RecipeEnvT x f k v m) x where
-  getAuxInput = fromContext (lift . supplyAuxInput)
+instance
+    ( Monad m
+    , SupplyAuxInput k m
+    , MonadRestrictedIO m
+    , MonadBaseControl IO m
+    , aux ~ AuxInput x (RecipeEnvT x f k v m)
+    ) => AccessAuxInput (RecipeEnvT x f k v m) aux where
+  getAuxInput = fromContext $ lift . supplyAuxInput (Proxy :: Proxy (RecipeEnvT x f k v m))
 
 instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x
@@ -248,8 +257,9 @@ scheduleBuild = coerceScheduler
 type GrubberPublicInterface :: forall k. (* -> *) -> k -> Constraint
 class ( MonadRestrictedIO m
       , FileReading m
+      , FileWriting m
       , FileReadToken m ~ GrubberReadToken
-      , AccessAuxInput m x
+      , AccessAuxInput m (AuxInput x m)
       ) => GrubberPublicInterface m x
 
 type GrubberInterface :: forall k. (* -> *) -> k -> Constraint
@@ -269,7 +279,9 @@ type RecipeBookGrub :: forall k. (k -> *) -> (k -> *) -> *
 type RecipeBookGrub (k :: kk -> *) v = RecipeBook (MonadRecipeGrub @kk) k v
 
 class SupplyAuxInput k m where
-  supplyAuxInput :: k x -> m (AuxInput x)
+  -- | This method has access to the internal operational details of the monad we execute in.
+  -- Additionally, all public interface methods are also available.
+  supplyAuxInput :: forall x p n. (InternalOperations n, GrubberPublicInterface n x) => p n -> k x -> m (AuxInput x n)
 
 -- | Class of values that can be produced from recipe outputs.
 -- For example, even though recipes for files don't return the written file content,

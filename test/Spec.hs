@@ -20,10 +20,8 @@ import Data.Dependent.Sum (DSum((:=>)))
 import Grubber.Blocking
 import Grubber.Types
 import Grubber.Grubber
---import Grubber.Filesystem
 
 import Control.Concurrent.MVar (newMVar, withMVar, MVar)
---import System.IO (hShow)
 import System.IO.Unsafe (unsafePerformIO)
 
 data Dependency a where
@@ -83,12 +81,12 @@ instance Applicative m => DependencyOuput DiamondTag DiamondResult m where
   fromRecipeOutput DRight = pure . DiamondResult
   fromRecipeOutput DTop = pure . DiamondResult
 
-type instance AuxInput 'TestKind = Int
+type instance AuxInput 'TestKind m = Int -- FileWriteToken m
 instance Applicative m => SupplyAuxInput DiamondTag m where
-  supplyAuxInput DBot = pure 42
-  supplyAuxInput DLeft = pure 42
-  supplyAuxInput DRight = pure 42
-  supplyAuxInput DTop = pure 42
+  supplyAuxInput _ DBot = pure 42 -- "./bot"
+  supplyAuxInput _ DLeft = pure 42 --"./left"
+  supplyAuxInput _ DRight = pure 42 --"./right"
+  supplyAuxInput _ DTop = pure 42 --"./top"
 
 data DiamondTestEnv
   = DiamondTestEnv
@@ -123,6 +121,7 @@ buildExample env tag = build onFailure rules ($ tag) where
         ~(DiamondResult _) <- resolve DLeft
         aux <- getAuxInput
         liftOptionalIO $ aux @?= 42
+        -- lift $ withWriteFile aux $ \hdl -> fwPutStr hdl "hello from test cases"
         return ()
     ]
 
