@@ -6,6 +6,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE LiberalTypeSynonyms #-}
 module Grubber.Types
 ( Recipe
 , BuildEnv
@@ -146,17 +147,18 @@ scheduleResolver deps _ reci = runResolver deps $ runRecipe reci
 
 type RecipeBook e k v = forall x. k x -> Maybe (Recipe e k v x)
 
+type ContM r m = forall x. (r -> m x) -> m x
 -- | A build system working in a monad 'm', most likely supporting some kind of state,
 -- implements refreshing a key 'k x' given a book of rules to run.
-type Build m e k v = forall x. RecipeBook e k v -> k x -> m (RecipeOutput x)
-type BuildX m e k v = forall x. RecipeBook e k v -> k x -> m x (RecipeOutput x)
+type Build m e k v = RecipeBook e k v -> ContM (forall x. k x -> m (RecipeOutput x)) m
+type BuildX n m e k v = RecipeBook e k v -> ContM (forall x. k x -> m x (RecipeOutput x)) n
 
 runScheduler :: forall m e k v. ()
              => (forall x. k x -> m (RecipeOutput x))
              -> (forall y. k y -> m (RecipeOutput y) -> m (v y))
              -> (forall x. Scheduler m e k v x)
              -> Build m e k v
-runScheduler onNoRecipe augmentResult schedule recipes = go
+runScheduler onNoRecipe augmentResult schedule recipes cont = cont go
   where
     resolv :: forall y. k y -> m (v y)
     resolv k = augmentResult k $ go k
@@ -165,12 +167,12 @@ runScheduler onNoRecipe augmentResult schedule recipes = go
       Nothing -> onNoRecipe k
       Just reci -> schedule resolv k reci
 
-runSchedulerX :: forall m e k v. ()
+runSchedulerX :: forall n m e k v. ()
               => (forall x. k x -> m x (RecipeOutput x))
               -> (forall x y. k y -> m y (RecipeOutput y) -> m x (v y))
               -> (forall x. Scheduler (m x) e k v x)
-              -> BuildX m e k v
-runSchedulerX onNoRecipe augmentDepResult schedule recipes = go
+              -> BuildX n m e k v
+runSchedulerX onNoRecipe augmentDepResult schedule recipes cont = cont go
   where
     resolv :: forall x y. k y -> m x (v y)
     resolv k = augmentDepResult k $ go k

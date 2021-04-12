@@ -102,7 +102,7 @@ fromRulesDMap :: GCompare k => DMap k (Recipe e k v) -> RecipeBook e k v
 fromRulesDMap m k = DM.lookup k m
 
 buildExample :: DiamondTestEnv -> DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
-buildExample env = build onFailure rules where
+buildExample env tag = build onFailure rules ($ tag) where
   rules :: RecipeBookGrub DiamondTag DiamondResult
   rules = fromRulesDMap $ DM.fromList
     [ DBot   :=> recipe do
@@ -137,7 +137,7 @@ atomicPutStrLn :: String -> IO ()
 atomicPutStrLn str = withMVar globalPutStrLock $ \_ -> putStrLn str
 
 _delayedExample :: DiamondTag x -> GrubberM DiamondTag DiamondResult (RecipeOutput x)
-_delayedExample = build onFailure delayedRules where
+_delayedExample tag = build onFailure delayedRules ($ tag) where
   delayedRules :: RecipeBookGrub DiamondTag DiamondResult
   delayedRules = fromRulesDMap $ DM.fromList
     [ DBot    :=> recipe do

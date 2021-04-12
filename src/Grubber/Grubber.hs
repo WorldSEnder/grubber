@@ -8,6 +8,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE LiberalTypeSynonyms #-}
 module Grubber.Grubber
 ( GrubberConfig(grubberRunLifecycle)
 , defaultGrubberCfg
@@ -287,20 +288,36 @@ build :: forall e kk (k :: kk -> *) v m.
       , DependencyOuput k v m )
       => (forall x. FailureReason k x -> m (RecipeOutput x))
       -> Build m (MonadRecipeGrub @kk) k v
-build onFailure recipes globalGoal = do
+build onFailure recipes cont = do
   m <- liftBase $ newTVarIO empty
   c <- asks (getConst . buildCache Const)
-  res <- runExceptT $ runResourceT $ runReaderT (runBuildT $ mkTarget globalGoal) $ TransactionState m c
-  finalize res
-  where
-    grubberScheduler :: forall y. Scheduler (BuildT k v m y) (MonadRecipeGrub @kk) k v y
-    grubberScheduler = scheduleBuild $ scheduleCoop $ scheduleReader $ scheduleAsync $ scheduleReadInputs $ scheduleCatchErrors scheduleResolver
+  let context :: TransactionState k v
+      context = TransactionState m c
 
-    catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
-    catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runRes -> controlT $ \runTs ->
-      (runTs (runRes inner) >>= lift . fromRecipeOutput k) `catchE` (throwError . DepFailed k)
+      grubberScheduler :: forall y. Scheduler (BuildT k v m y) (MonadRecipeGrub @kk) k v y
+      grubberScheduler =
+          scheduleBuild
+        $ scheduleCoop
+        $ scheduleReader
+        $ scheduleAsync
+        $ scheduleReadInputs
+        $ scheduleCatchErrors
+        scheduleResolver
 
-    mkTarget = runSchedulerX (throwError . NoRecipeFound) catchErrorInDep grubberScheduler recipes
+      catchErrorInDep :: forall x y. k y -> BuildT k v m y (RecipeOutput y) -> BuildT k v m x (v y)
+      catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runRes -> controlT $ \runTs ->
+        (runTs (runRes inner) >>= lift . fromRecipeOutput k) `catchE` (throwError . DepFailed k)
 
-    finalize (Left e) = onFailure e
-    finalize (Right ok) = pure ok
+      finalize :: forall x. Either (FailureReason k x) (RecipeOutput x) -> m (RecipeOutput x)
+      finalize (Left e) = onFailure e
+      finalize (Right ok) = pure ok
+
+  -- resources are collected at the end! Do *not* cancel async tasks even if a single rule might have been interrupted,
+  -- this could have been caught. Canceling might have the unintended side effect of contaminating the volatile build cache
+  -- with exceptional values. This should never leak through into the file system or other caches, but nonetheless, don't cancel
+  -- if not needed!
+  runResourceT $ runSchedulerX (throwError . NoRecipeFound) catchErrorInDep grubberScheduler recipes $ \singleRule ->
+    controlT $ \runRes ->
+      let ruleInContext :: forall x. k x -> m (RecipeOutput x)
+          ruleInContext goal = runExceptT (runRes $ runReaderT (runBuildT $ singleRule goal) context) >>= finalize
+      in  cont ruleInContext
