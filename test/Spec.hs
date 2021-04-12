@@ -141,24 +141,33 @@ _delayedExample tag = build onFailure delayedRules ($ tag) where
   delayedRules :: RecipeBookGrub DiamondTag DiamondResult
   delayedRules = fromRulesDMap $ DM.fromList
     [ DBot    :=> recipe do
+        -- bot is delayed by 2 seconds
         liftOptionalIO $ atomicPutStrLn "start bot" >> threadDelay 2000000 >> atomicPutStrLn "end bot"
         return ()
     , DLeft   :=> recipe do
+        -- left is delayed by 3 seconds
         liftOptionalIO $ atomicPutStrLn "start left" >> threadDelay 3000000 >> atomicPutStrLn "end left"
         return ()
     , DRight  :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start right"
         ~(DiamondResult b) <- resolve DBot
         ~(DiamondResult l) <- resolve DLeft
-        b `seq` l `seq` liftOptionalIO $ threadDelay 2000000 >> atomicPutStrLn "end right"
+        -- right starts asynchronously resolving both bot and left, waits for their results
+        -- then delays for another 2 seconds
+        b `seq` l `seq` liftOptionalIO $ atomicPutStrLn "start delay (right)" >> threadDelay 2000000 >> atomicPutStrLn "end right"
         return ()
     , DTop   :=> recipe do
         liftOptionalIO $ atomicPutStrLn "start top"
+        -- top resolves bot
         ~(DiamondResult b) <- resolve DBot
+        -- waits for it to complete, then resolves left
         ~(DiamondResult l) <- b `seq` resolve DLeft
+        -- also immediately starts resolving right. At this points bot is already resolved.
+        -- left should also be resolved only once, overall
         ~(DiamondResult r) <- resolve DRight
-        --withReadFile _ $ \hdl -> liftOptionalIO $ hShow hdl >>= putStrLn
-        l `seq` r `seq` liftOptionalIO $ threadDelay 1000000 >> atomicPutStrLn "end top"
+        -- waits for left and right to complete, then delays for another 1 second
+        l `seq` r `seq` liftOptionalIO $ atomicPutStrLn "start delay (top)" >> threadDelay 1000000 >> atomicPutStrLn "end top"
+        -- should take 2 + 3 + 2 + 1 = 9 seconds overall
         return ()
     ]
 
