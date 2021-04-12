@@ -94,6 +94,7 @@ data DiamondTestEnv
   , counterLeft :: IORef Int
   , counterRight :: IORef Int
   , counterBot :: IORef Int
+  , triggerTop :: IORef Bool
   }
 
 fromRulesDMap :: GCompare k => DMap k (Recipe e k v) -> RecipeBook e k v
@@ -121,6 +122,7 @@ buildExample env tag = build onFailure rules ($ tag) where
         ~(DiamondResult _) <- resolve DLeft
         aux <- getAuxInput
         liftOptionalIO $ aux @?= 42
+        liftIdempotentIO $ modifyIORef' (triggerTop env) (|| True)
         -- lift $ withWriteFile aux $ \hdl -> fwPutStr hdl "hello from test cases"
         return ()
     ]
@@ -179,12 +181,14 @@ grubberTests :: TestTree
 grubberTests = testGroup "Grubber tests"
   [ testCase "diamond test case" $ do
       rTop <- newIORef 0 ; rLeft <- newIORef 0 ; rRight <- newIORef 0 ; rBot <- newIORef 0
-      let cnts = DiamondTestEnv rTop rLeft rRight rBot
+      trigger <- newIORef False
+      let cnts = DiamondTestEnv rTop rLeft rRight rBot trigger
       runGrubber grubberSpecCfg $ buildExample cnts DTop
       (== 1) <$> readIORef rTop @? "top should have run once"
       (== 1) <$> readIORef rLeft @? "left should have run once"
       (== 1) <$> readIORef rRight @? "right should have run once"
       (== 1) <$> readIORef rBot @? "bot should have run once"
+      readIORef trigger @? "trigger should have been set"
   ]
 
 main :: IO ()

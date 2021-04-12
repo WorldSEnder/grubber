@@ -83,7 +83,7 @@ instance MonadRestrictedIO (GrubberM k v) where
   liftOptionalIO act = do
     shouldRun <- GrubberM $ asks (grubberRunLifecycle . gsCfg)
     if shouldRun then GrubberM (liftBase act) else pure ()
-  -- liftIdempotentIO = GrubberM . liftIO
+  liftIdempotentIO = GrubberM . liftIO
 
 runGrubber :: GrubberConfig -> GrubberM k v r -> IO r
 runGrubber cfg m = do
