@@ -1,5 +1,9 @@
 .stack-work/
 *~
+# Nix build results
+result*
+*.materialized
+/nt
 
 ### Haskell ###
 dist
