@@ -134,8 +134,8 @@ buildExample env tag = build onFailure rules ($ tag) where
         return ()
     ]
 
-onFailure :: FailureReason DiamondTag x -> GrubberM DiamondTag DiamondResult y
-onFailure failure = liftBase $ assertFailure $ show failure
+onFailure :: DiamondTag x -> FailureReason DiamondTag x -> GrubberM DiamondTag DiamondResult y
+onFailure key failure = liftBase $ assertFailure $ "Rule for " ++ gshow key ++ " failed:\n" ++ show failure
 
 globalPutStrLock :: MVar ()
 globalPutStrLock = unsafePerformIO $ newMVar ()

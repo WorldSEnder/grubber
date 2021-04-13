@@ -95,7 +95,7 @@ runGrubberDef :: GrubberM k v r -> IO r
 runGrubberDef = runGrubber defaultGrubberCfg
 
 data FailureReason k x
-  = NoRecipeFound (k x)
+  = NoRecipeFound
   | forall y. DepFailed (k y) (FailureReason k y)
   | RuntimeError SomeException
 
@@ -104,9 +104,8 @@ instance GShow k => Show (FailureReason k x) where
     where
     doShow :: forall y. Int -> Int -> FailureReason k y -> ShowS
     doShow l _ _ | l > 5 = showString "<failure, details omitted>"
-    doShow _ p (NoRecipeFound k) = showParen (p > 10) $
-      showString "No recipe found for key " .
-      gshowsPrec 11 k
+    doShow _ p NoRecipeFound = showParen (p > 10) $
+      showString "No recipe found"
     doShow l p (DepFailed dep r) = showParen (p > 10) $
       showString "Dependency " .
       gshowsPrec 11 dep        .
@@ -114,7 +113,7 @@ instance GShow k => Show (FailureReason k x) where
       doShow (1 + l) p r
     doShow _ p (RuntimeError exc) = showParen (p > 10) $
       showString "RuntimeError: " .
-      shows exc
+      showsPrec p exc
 
 instance GShow k => GShow (FailureReason k) where
   gshowsPrec = showsPrec
@@ -319,7 +318,7 @@ build :: forall e kk (k :: kk -> *) v m.
       , GCompare k
       , SupplyAuxInput k m
       , DependencyOuput k v m )
-      => (forall x. FailureReason k x -> m (RecipeOutput x))
+      => (forall x. k x -> FailureReason k x -> m (RecipeOutput x))
       -> Build m (MonadRecipeGrub @kk) k v
 build onFailure recipes cont = do
   m <- liftBase $ newTVarIO empty
@@ -341,16 +340,16 @@ build onFailure recipes cont = do
       catchErrorInDep k (BuildT inner) = BuildT $ controlT $ \runRes -> controlT $ \runTs ->
         (runTs (runRes inner) >>= lift . fromRecipeOutput k) `catchE` (throwError . DepFailed k)
 
-      finalize :: forall x. Either (FailureReason k x) (RecipeOutput x) -> m (RecipeOutput x)
-      finalize (Left e) = onFailure e
-      finalize (Right ok) = pure ok
+      finalize :: forall x. k x -> Either (FailureReason k x) (RecipeOutput x) -> m (RecipeOutput x)
+      finalize k (Left e) = onFailure k e
+      finalize _ (Right ok) = pure ok
 
   -- resources are collected at the end! Do *not* cancel async tasks even if a single rule might have been interrupted,
   -- this could have been caught. Canceling might have the unintended side effect of contaminating the volatile build cache
   -- with exceptional values. This should never leak through into the file system or other caches, but nonetheless, don't cancel
   -- if not needed!
-  runResourceT $ runSchedulerX (throwError . NoRecipeFound) catchErrorInDep grubberScheduler recipes $ \singleRule ->
+  runResourceT $ runSchedulerX (throwError . const NoRecipeFound) catchErrorInDep grubberScheduler recipes $ \singleRule ->
     controlT $ \runRes ->
       let ruleInContext :: forall x. k x -> m (RecipeOutput x)
-          ruleInContext goal = runExceptT (runRes $ runReaderT (runBuildT $ singleRule goal) context) >>= finalize
+          ruleInContext goal = runExceptT (runRes $ runReaderT (runBuildT $ singleRule goal) context) >>= finalize goal
       in  cont ruleInContext
