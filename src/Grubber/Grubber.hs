@@ -172,11 +172,12 @@ deriving instance Monad m => MonadContext (k x) (RecipeEnvT x f k v m)
 
 instance MonadBaseControl IO m => FileReading (RecipeEnvT x f k v m) where
   type FileReadToken (RecipeEnvT x f k v m) = GrubberReadToken
-  withReadFile (GrubberReadToken fp) = withReadFileB fp \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
+  withReadBinaryFile (GrubberReadToken fp) = defWithReadBinaryFile fp
+    \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m)) 
 
 instance MonadBaseControl IO m => FileWriting (RecipeEnvT x f k v m) where
   type FileWriteToken (RecipeEnvT x f k v m) = FilePath
-  withWriteFile = withWriteFileB \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))
+  withWriteBinaryFile = defWithWriteBinaryFile \\ internalIO (Proxy :: Proxy (RecipeEnvT x f k v m))
   fwPutStr hdl str = liftBase $ hPutStr hdl str
   toReadToken = return . GrubberReadToken
 

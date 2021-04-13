@@ -130,7 +130,7 @@ buildExample env tag = build onFailure rules ($ tag) where
         aux <- getAuxInput
         liftOptionalIO $ aux @?= 42
         liftIdempotentIO $ modifyIORef' (triggerTop env) (|| True)
-        -- lift $ withWriteFile aux $ \hdl -> fwPutStr hdl "hello from test cases"
+        -- lift $ withWriteBinaryFile aux $ \hdl -> fwPutStr hdl "hello from test cases"
         return ()
     ]
 
