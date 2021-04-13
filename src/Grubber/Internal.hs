@@ -36,6 +36,3 @@ internalFilewriting p = withInternalOps p Dict
 
 filesystemType :: HasInternalOperations m => proxy m -> Dict (FileWriteToken m ~ FilePath)
 filesystemType p = withInternalOps p Dict
-
-instance HasInternalOperations m => HasInternalOperations (ReflectingReaderT uax s m) where
-  internalDict p = withInternalOps p Dict
