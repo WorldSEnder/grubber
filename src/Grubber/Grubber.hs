@@ -36,6 +36,7 @@ import Control.Monad.Except
 
 import Data.Functor.Compose
 import Data.Functor.Const
+import Data.GADT.Show
 import Data.GADT.Compare
 import Data.Dependent.Map as DM hiding ((\\))
 import Data.Constraint
@@ -97,6 +98,26 @@ data FailureReason k x
   = NoRecipeFound (k x)
   | forall y. DepFailed (k y) (FailureReason k y)
   | RuntimeError SomeException
+
+instance GShow k => Show (FailureReason k x) where
+  showsPrec = doShow 0
+    where
+    doShow :: forall y. Int -> Int -> FailureReason k y -> ShowS
+    doShow l _ _ | l > 5 = showString "<failure, details omitted>"
+    doShow _ p (NoRecipeFound k) = showParen (p > 10) $
+      showString "No recipe found for key " .
+      gshowsPrec 11 k
+    doShow l p (DepFailed dep r) = showParen (p > 10) $
+      showString "Dependency " .
+      gshowsPrec 11 dep        .
+      showString " failed:\n"  .
+      doShow (1 + l) p r
+    doShow _ p (RuntimeError exc) = showParen (p > 10) $
+      showString "RuntimeError: " .
+      shows exc
+
+instance GShow k => GShow (FailureReason k) where
+  gshowsPrec = showsPrec
 
 type BuildResult k x = Either (FailureReason k x) (RecipeOutput x)
 

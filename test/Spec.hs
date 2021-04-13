@@ -12,6 +12,7 @@ import Test.HUnit
 import Control.Monad.Base
 import Control.Concurrent (threadDelay)
 import Data.IORef
+import Data.GADT.Show
 import Data.GADT.Compare.TH
 import Data.GADT.Compare
 import Data.Dependent.Map as DM
@@ -75,6 +76,12 @@ data DiamondResult a where
 $(deriveGEq ''DiamondTag)
 $(deriveGCompare ''DiamondTag)
 
+instance GShow DiamondTag where
+  gshowsPrec _ DBot = showString "bot"
+  gshowsPrec _ DLeft = showString "left"
+  gshowsPrec _ DRight = showString "right"
+  gshowsPrec _ DTop = showString "top"
+
 instance Applicative m => DependencyOuput DiamondTag DiamondResult m where
   fromRecipeOutput DBot = pure . DiamondResult
   fromRecipeOutput DLeft = pure . DiamondResult
@@ -127,8 +134,8 @@ buildExample env tag = build onFailure rules ($ tag) where
         return ()
     ]
 
-onFailure :: FailureReason k x -> GrubberM DiamondTag DiamondResult y
-onFailure _ = liftBase $ assertFailure "shouldn't fail to run"
+onFailure :: FailureReason DiamondTag x -> GrubberM DiamondTag DiamondResult y
+onFailure failure = liftBase $ assertFailure $ show failure
 
 globalPutStrLock :: MVar ()
 globalPutStrLock = unsafePerformIO $ newMVar ()
