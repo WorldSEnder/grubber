@@ -160,7 +160,7 @@ newtype RecipeEnvT x f k v m r = RecipeEnvT
         )
       ) r
   }
-  deriving (Functor, Applicative, Monad, MonadRestrictedIO)
+  deriving (Functor, Applicative, Monad, MonadRestrictedIO, MonadFail)
 
 deriving instance MonadBase b m => MonadBase b (RecipeEnvT x f k v m)
 deriving instance MonadBaseControl b m => MonadBaseControl b (RecipeEnvT x f k v m)
@@ -185,7 +185,7 @@ instance MonadBaseControl IO m => HasInternalOperations (RecipeEnvT x f k v m) w
   internalDict _ = Dict
 
 instance
-    ( Monad m
+    ( MonadFail m
     , SupplyAuxInput k m
     , MonadRestrictedIO m
     , MonadBaseControl IO m
@@ -193,9 +193,9 @@ instance
     ) => AccessAuxInput (RecipeEnvT x f k v m) aux where
   getAuxInput = fromContext $ lift . supplyAuxInput (Proxy :: Proxy (RecipeEnvT x f k v m))
 
-instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
+instance ( MonadFail m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberPublicInterface (RecipeEnvT x f k v m) x
-instance ( Monad m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
+instance ( MonadFail m, MonadBaseControl IO m, MonadRestrictedIO m, SupplyAuxInput k m )
   => GrubberInterface (RecipeEnvT x f k v m) x
 
 scheduleCatchErrors :: MonadCatch m
@@ -276,6 +276,7 @@ scheduleBuild = coerceScheduler
 
 type GrubberPublicInterface :: forall k. (* -> *) -> k -> Constraint
 class ( MonadRestrictedIO m
+      , MonadFail m
       , FileReading m
       , FileWriting m
       , FileReadToken m ~ GrubberReadToken
@@ -312,6 +313,7 @@ class DependencyOuput k v m where
 build :: forall e kk (k :: kk -> *) v m.
       ( MonadRestrictedIO m
       , MonadBaseControl IO m
+      , MonadFail m
       , MonadCatch m
       , MonadReader e m
       , HasBuildCache k v e

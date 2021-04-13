@@ -110,7 +110,7 @@ recipe' reci = Recipe $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci reso
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
 
 newtype WithResolverT k v m a = WithResolver { runResolver_ :: ReaderT (Resolver k v m) m a }
-  deriving (Functor, Applicative, Monad, MonadRestrictedIO)
+  deriving (Functor, Applicative, Monad, MonadRestrictedIO, MonadFail)
 
 instance MonadTrans (WithResolverT k v) where
   lift ma = WithResolver $ lift ma

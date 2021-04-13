@@ -90,6 +90,9 @@ instance (Applicative m, Semigroupal w) => Monad (BlockingT w m) where
   BlockedOn w c >>= f = BlockedOn w $ c >=> f
   Effect ma >>= f = Effect $ \x -> ma $ \ba -> x (ba >>= f)
 
+instance (MonadFail m, Semigroupal w) => MonadFail (BlockingT w m) where
+  fail = lift . fail
+
 instance (Semigroupal w) => MonadTrans (BlockingT w) where
   lift ma = Effect $ \x -> ma >>= x . Pure
 
