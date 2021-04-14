@@ -1,7 +1,0 @@
-cradle:
-  stack:
-    - path: "./src"
-      component: "grubber:lib"
-
-    - path: "./test"
-      component: "grubber:test:grubber-tests"
