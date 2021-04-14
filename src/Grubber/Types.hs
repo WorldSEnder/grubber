@@ -9,11 +9,14 @@
 {-# LANGUAGE LiberalTypeSynonyms #-}
 module Grubber.Types
 ( Recipe
+, Derivation
 , BuildEnv
 , RecipeOutput
 , recipe
 , recipe'
 , runRecipe
+, runRecipe_
+, runDerivation
 , scheduleResolver
 , DependencyResolver(..)
 , WithResolverT(..)
@@ -97,15 +100,22 @@ type instance RecipeOutput e = e
 class DependencyResolver k v f where
   resolve :: k a -> f (v a)
 
--- | A recipe for producing a value of type 'b' in any environment fulfilling 'c',
+-- | A derivation for producing a value of type 'r' in any environment fulfilling 'BuildEnv e',
 -- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
-newtype Recipe e k v x = Recipe { runRecipe :: forall f. (BuildEnv e f x) => WithResolverT k v f (RecipeOutput x) }
+newtype Derivation e k v x r = Derivation { runDerivation :: forall f. (BuildEnv e f x) => WithResolverT k v f r }
+
+-- | A recipe for producing a value of type 'RecipeOutput x' in any environment fulfilling 'BuildEnv e',
+-- having access to a dependency resolution mechanics for resolving keys 'k a' to values 'v a'
+newtype Recipe e k v x = Recipe { runRecipe_ :: Derivation e k v x (RecipeOutput x) }
+
+runRecipe :: BuildEnv e f x => Recipe e k v x -> WithResolverT k v f (RecipeOutput x)
+runRecipe = runDerivation . runRecipe_
 
 recipe :: (forall f. BuildEnv e f x => WithResolverT k v f (RecipeOutput x)) -> Recipe e k v x
-recipe = Recipe
+recipe f = Recipe $ Derivation f
 
 recipe' :: (forall f. BuildEnv e f x => (forall a. k a -> f (v a)) -> f (RecipeOutput x)) -> Recipe e k v x
-recipe' reci = Recipe $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci resolv
+recipe' reci = Recipe $ Derivation $ WithResolver $ ReaderT $ \(Resolver resolv) -> reci resolv
 
 newtype Resolver k v m = Resolver (forall x. k x -> m (v x))
 
