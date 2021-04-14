@@ -7,7 +7,7 @@ cabal-version: 1.12
 name:           grubber
 version:        0.1.0.0
 synopsis:       A build system (á la carte)
-description:    Please see the README on GitHub at <https://github.com/WorldSEnder/kinded-reflection#readme>
+description:    Please see the README on GitHub at <https://github.com/WorldSEnder/grubber#readme>
 homepage:       https://github.com/WorldSEnder/grubber#readme
 bug-reports:    https://github.com/WorldSEnder/grubber/issues
 author:         Martin Molzer
